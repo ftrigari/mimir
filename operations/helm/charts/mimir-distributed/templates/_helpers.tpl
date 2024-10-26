@@ -208,8 +208,8 @@ Params:
   ctx = . context
 */}}
 {{- define "mimir.commonLabels" -}}
-{{- if .ctx.Values.global.commonLabels }}
-{{- toYaml .ctx.Values.global.commonLabels  }}
+{{- with .ctx.Values.global.commonLabels }}
+{{- toYaml .  }}
 {{- end }}
 {{- end -}}
 
@@ -255,7 +255,7 @@ name: "{{ .component }}-{{ .rolloutZoneName }}" {{- /* Currently required for ro
 rollout-group: {{ .component }}
 zone: {{ .rolloutZoneName }}
 {{- end }}
-{{ include "mimir.commonLabels" (dict "ctx" .ctx ) }}
+{{ include "mimir.commonLabels" . }}
 {{- end -}}
 
 {{/*
@@ -309,7 +309,6 @@ name: "{{ .component }}-{{ .rolloutZoneName }}" {{- /* Currently required for ro
 rollout-group: {{ .component }}
 zone: {{ .rolloutZoneName }}
 {{- end }}
-{{ include "mimir.commonLabels" (dict "ctx" .ctx )  }}
 {{- end -}}
 
 {{/*
