@@ -203,6 +203,17 @@ Params:
 {{- end -}}
 
 {{/*
+Common Labels
+Params:
+  ctx = . context
+*/}}
+{{- define "mimir.commonLabels" -}}
+{{- if .ctx.Values.global.commonLabels }}
+{{- toYaml .ctx.Values.global.commonLabels  }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Resource labels
 Params:
   ctx = . context
@@ -244,6 +255,7 @@ name: "{{ .component }}-{{ .rolloutZoneName }}" {{- /* Currently required for ro
 rollout-group: {{ .component }}
 zone: {{ .rolloutZoneName }}
 {{- end }}
+{{ include "mimir.commonLabels" (dict "ctx" .ctx ) }}
 {{- end -}}
 
 {{/*
@@ -297,6 +309,7 @@ name: "{{ .component }}-{{ .rolloutZoneName }}" {{- /* Currently required for ro
 rollout-group: {{ .component }}
 zone: {{ .rolloutZoneName }}
 {{- end }}
+{{ include "mimir.commonLabels" (dict "ctx" .ctx )  }}
 {{- end -}}
 
 {{/*
