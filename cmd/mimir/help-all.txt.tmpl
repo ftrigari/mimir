@@ -13,8 +13,32 @@ Usage of ./cmd/mimir/mimir:
     	Azure storage container name
   -alertmanager-storage.azure.endpoint-suffix string
     	Azure storage endpoint suffix without schema. The account name will be prefixed to this value to create the FQDN. If set to empty string, default endpoint suffix is used.
+  -alertmanager-storage.azure.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -alertmanager-storage.azure.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -alertmanager-storage.azure.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -alertmanager-storage.azure.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -alertmanager-storage.azure.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -alertmanager-storage.azure.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -alertmanager-storage.azure.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -alertmanager-storage.azure.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -alertmanager-storage.azure.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -alertmanager-storage.azure.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -alertmanager-storage.azure.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -alertmanager-storage.azure.max-retries int
     	Number of retries for recoverable errors (default 20)
+  -alertmanager-storage.azure.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -alertmanager-storage.azure.user-assigned-id string
     	User assigned managed identity. If empty, then System assigned identity is used.
   -alertmanager-storage.backend string
@@ -23,8 +47,32 @@ Usage of ./cmd/mimir/mimir:
     	Local filesystem storage directory. (default "alertmanager")
   -alertmanager-storage.gcs.bucket-name string
     	GCS bucket name
+  -alertmanager-storage.gcs.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -alertmanager-storage.gcs.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -alertmanager-storage.gcs.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -alertmanager-storage.gcs.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -alertmanager-storage.gcs.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -alertmanager-storage.gcs.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -alertmanager-storage.gcs.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -alertmanager-storage.gcs.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -alertmanager-storage.gcs.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -alertmanager-storage.gcs.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -alertmanager-storage.gcs.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -alertmanager-storage.gcs.service-account string
     	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path.
+  -alertmanager-storage.gcs.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -alertmanager-storage.local.path string
     	Path at which alertmanager configurations are stored.
   -alertmanager-storage.s3.access-key-id string
@@ -38,19 +86,19 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager-storage.s3.endpoint string
     	The S3 bucket endpoint. It could be an AWS S3 endpoint listed at https://docs.aws.amazon.com/general/latest/gr/s3.html or the address of an S3-compatible service in hostname:port format.
   -alertmanager-storage.s3.expect-continue-timeout duration
-    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. 0 to send the request body immediately. (default 1s)
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
   -alertmanager-storage.s3.http.idle-conn-timeout duration
-    	The time an idle connection will remain idle before closing. (default 1m30s)
+    	The time an idle connection remains idle before closing. (default 1m30s)
   -alertmanager-storage.s3.http.insecure-skip-verify
-    	If the client connects to S3 via HTTPS and this option is enabled, the client will accept any certificate and hostname.
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
   -alertmanager-storage.s3.http.response-header-timeout duration
-    	The amount of time the client will wait for a servers response headers. (default 2m0s)
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
   -alertmanager-storage.s3.http.tls-ca-path string
-    	Path to the CA certificates to validate server certificate against. If not set, the host's root CA certificates are used.
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
   -alertmanager-storage.s3.http.tls-cert-path string
-    	Path to the client certificate, which will be used for authenticating with the server. Also requires the key path to be configured.
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
   -alertmanager-storage.s3.http.tls-key-path string
-    	Path to the key for the client certificate. Also requires the client certificate to be configured.
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
   -alertmanager-storage.s3.http.tls-server-name string
     	Override the expected name on the server certificate.
   -alertmanager-storage.s3.insecure
@@ -58,11 +106,11 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager-storage.s3.list-objects-version string
     	Use a specific version of the S3 list object API. Supported values are v1 or v2. Default is unset.
   -alertmanager-storage.s3.max-connections-per-host int
-    	Maximum number of connections per host. 0 means no limit.
+    	Maximum number of connections per host. Set to 0 for no limit.
   -alertmanager-storage.s3.max-idle-connections int
-    	Maximum number of idle (keep-alive) connections across all hosts. 0 means no limit. (default 100)
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
   -alertmanager-storage.s3.max-idle-connections-per-host int
-    	Maximum number of idle (keep-alive) connections to keep per-host. If 0, a built-in default value is used. (default 100)
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -alertmanager-storage.s3.native-aws-auth-enabled
     	[experimental] If enabled, it will use the default authentication methods of the AWS SDK for go based on known environment variables and known AWS config files.
   -alertmanager-storage.s3.part-size uint
@@ -88,7 +136,7 @@ Usage of ./cmd/mimir/mimir:
   -alertmanager-storage.s3.sts-endpoint string
     	Accessing S3 resources using temporary, secure credentials provided by AWS Security Token Service.
   -alertmanager-storage.s3.tls-handshake-timeout duration
-    	Maximum time to wait for a TLS handshake. 0 means no limit. (default 10s)
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -alertmanager-storage.s3.trace.enabled
     	When enabled, low-level S3 HTTP operation information is logged at the debug level.
   -alertmanager-storage.storage-prefix string
@@ -203,9 +251,9 @@ Usage of ./cmd/mimir/mimir:
     	Maximum size of the Alertmanager configuration for a tenant. 0 = no limit.
   -alertmanager.max-dispatcher-aggregation-groups int
     	Maximum number of aggregation groups in Alertmanager's dispatcher that a tenant can have. Each active aggregation group uses single goroutine. When the limit is reached, dispatcher will not dispatch alerts that belong to additional aggregation groups, but existing groups will keep working properly. 0 = no limit.
-  -alertmanager.max-grafana-config-size-bytes int
+  -alertmanager.max-grafana-config-size-bytes value
     	Maximum size of the Grafana Alertmanager configuration for a tenant. 0 = no limit.
-  -alertmanager.max-grafana-state-size-bytes int
+  -alertmanager.max-grafana-state-size-bytes value
     	Maximum size of the Grafana Alertmanager state for a tenant. 0 = no limit.
   -alertmanager.max-recv-msg-size int
     	Maximum size (bytes) of an accepted HTTP request body. (default 104857600)
@@ -311,8 +359,6 @@ Usage of ./cmd/mimir/mimir:
     	[experimental] Enable UTF-8 strict mode. Allows UTF-8 characters in the matchers for routes and inhibition rules, in silences, and in the labels for alerts. It is recommended that all tenants run the `migrate-utf8` command in mimirtool before enabling this mode. Otherwise, some tenant configurations might fail to load. For more information, refer to [Enable UTF-8](https://grafana.com/docs/mimir/<MIMIR_VERSION>/references/architecture/components/alertmanager/#enable-utf-8). Enabling and then disabling UTF-8 strict mode can break existing Alertmanager configurations if tenants added UTF-8 characters to their Alertmanager configuration while it was enabled.
   -alertmanager.web.external-url string
     	The URL under which Alertmanager is externally reachable (eg. could be different than -http.alertmanager-http-prefix in case Alertmanager is served via a reverse proxy). This setting is used both to configure the internal requests router and to generate links in alert templates. If the external URL has a path portion, it will be used to prefix all HTTP endpoints served by Alertmanager, both the UI and API. (default http://localhost:8080/alertmanager)
-  -api.get-request-for-ingester-shutdown-enabled
-    	[deprecated] Enable GET requests to the /ingester/shutdown endpoint to trigger an ingester shutdown. This is a potentially dangerous operation and should only be enabled consciously.
   -api.skip-label-count-validation-header-enabled
     	Allows to disable enforcement of the label count limit "max_label_names_per_series" via X-Mimir-SkipLabelCountValidation header on the http write path. Allowing this for external clients allows any client to send invalid label counts. After enabling it, requests with a specific HTTP header set to true will not have label counts validated.
   -api.skip-label-name-validation-header-enabled
@@ -331,8 +377,32 @@ Usage of ./cmd/mimir/mimir:
     	Azure storage container name
   -blocks-storage.azure.endpoint-suffix string
     	Azure storage endpoint suffix without schema. The account name will be prefixed to this value to create the FQDN. If set to empty string, default endpoint suffix is used.
+  -blocks-storage.azure.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -blocks-storage.azure.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -blocks-storage.azure.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -blocks-storage.azure.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -blocks-storage.azure.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -blocks-storage.azure.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -blocks-storage.azure.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -blocks-storage.azure.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -blocks-storage.azure.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -blocks-storage.azure.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -blocks-storage.azure.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -blocks-storage.azure.max-retries int
     	Number of retries for recoverable errors (default 20)
+  -blocks-storage.azure.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -blocks-storage.azure.user-assigned-id string
     	User assigned managed identity. If empty, then System assigned identity is used.
   -blocks-storage.backend string
@@ -705,8 +775,32 @@ Usage of ./cmd/mimir/mimir:
     	Local filesystem storage directory. (default "blocks")
   -blocks-storage.gcs.bucket-name string
     	GCS bucket name
+  -blocks-storage.gcs.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -blocks-storage.gcs.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -blocks-storage.gcs.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -blocks-storage.gcs.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -blocks-storage.gcs.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -blocks-storage.gcs.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -blocks-storage.gcs.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -blocks-storage.gcs.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -blocks-storage.gcs.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -blocks-storage.gcs.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -blocks-storage.gcs.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -blocks-storage.gcs.service-account string
     	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path.
+  -blocks-storage.gcs.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -blocks-storage.s3.access-key-id string
     	S3 access key ID
   -blocks-storage.s3.bucket-lookup-type value
@@ -718,19 +812,19 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.s3.endpoint string
     	The S3 bucket endpoint. It could be an AWS S3 endpoint listed at https://docs.aws.amazon.com/general/latest/gr/s3.html or the address of an S3-compatible service in hostname:port format.
   -blocks-storage.s3.expect-continue-timeout duration
-    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. 0 to send the request body immediately. (default 1s)
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
   -blocks-storage.s3.http.idle-conn-timeout duration
-    	The time an idle connection will remain idle before closing. (default 1m30s)
+    	The time an idle connection remains idle before closing. (default 1m30s)
   -blocks-storage.s3.http.insecure-skip-verify
-    	If the client connects to S3 via HTTPS and this option is enabled, the client will accept any certificate and hostname.
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
   -blocks-storage.s3.http.response-header-timeout duration
-    	The amount of time the client will wait for a servers response headers. (default 2m0s)
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
   -blocks-storage.s3.http.tls-ca-path string
-    	Path to the CA certificates to validate server certificate against. If not set, the host's root CA certificates are used.
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
   -blocks-storage.s3.http.tls-cert-path string
-    	Path to the client certificate, which will be used for authenticating with the server. Also requires the key path to be configured.
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
   -blocks-storage.s3.http.tls-key-path string
-    	Path to the key for the client certificate. Also requires the client certificate to be configured.
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
   -blocks-storage.s3.http.tls-server-name string
     	Override the expected name on the server certificate.
   -blocks-storage.s3.insecure
@@ -738,11 +832,11 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.s3.list-objects-version string
     	Use a specific version of the S3 list object API. Supported values are v1 or v2. Default is unset.
   -blocks-storage.s3.max-connections-per-host int
-    	Maximum number of connections per host. 0 means no limit.
+    	Maximum number of connections per host. Set to 0 for no limit.
   -blocks-storage.s3.max-idle-connections int
-    	Maximum number of idle (keep-alive) connections across all hosts. 0 means no limit. (default 100)
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
   -blocks-storage.s3.max-idle-connections-per-host int
-    	Maximum number of idle (keep-alive) connections to keep per-host. If 0, a built-in default value is used. (default 100)
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -blocks-storage.s3.native-aws-auth-enabled
     	[experimental] If enabled, it will use the default authentication methods of the AWS SDK for go based on known environment variables and known AWS config files.
   -blocks-storage.s3.part-size uint
@@ -768,7 +862,7 @@ Usage of ./cmd/mimir/mimir:
   -blocks-storage.s3.sts-endpoint string
     	Accessing S3 resources using temporary, secure credentials provided by AWS Security Token Service.
   -blocks-storage.s3.tls-handshake-timeout duration
-    	Maximum time to wait for a TLS handshake. 0 means no limit. (default 10s)
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -blocks-storage.s3.trace.enabled
     	When enabled, low-level S3 HTTP operation information is logged at the debug level.
   -blocks-storage.storage-prefix string
@@ -815,6 +909,8 @@ Usage of ./cmd/mimir/mimir:
     	OpenStack Swift user ID.
   -blocks-storage.swift.username string
     	OpenStack Swift username.
+  -blocks-storage.tsdb.bigger-out-of-order-blocks-for-old-samples
+    	[experimental] When enabled, ingester produces 24h blocks for out-of-order data that is before the current day, instead of the usual 2h blocks.
   -blocks-storage.tsdb.block-postings-for-matchers-cache-force
     	[experimental] Force the cache to be used for postings for matchers in compacted blocks, even if it's not a concurrent (query-sharding) call.
   -blocks-storage.tsdb.block-postings-for-matchers-cache-max-bytes int
@@ -885,8 +981,32 @@ Usage of ./cmd/mimir/mimir:
     	Azure storage container name
   -common.storage.azure.endpoint-suffix string
     	Azure storage endpoint suffix without schema. The account name will be prefixed to this value to create the FQDN. If set to empty string, default endpoint suffix is used.
+  -common.storage.azure.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -common.storage.azure.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -common.storage.azure.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -common.storage.azure.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -common.storage.azure.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -common.storage.azure.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -common.storage.azure.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -common.storage.azure.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -common.storage.azure.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -common.storage.azure.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -common.storage.azure.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -common.storage.azure.max-retries int
     	Number of retries for recoverable errors (default 20)
+  -common.storage.azure.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -common.storage.azure.user-assigned-id string
     	User assigned managed identity. If empty, then System assigned identity is used.
   -common.storage.backend string
@@ -895,8 +1015,32 @@ Usage of ./cmd/mimir/mimir:
     	Local filesystem storage directory.
   -common.storage.gcs.bucket-name string
     	GCS bucket name
+  -common.storage.gcs.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -common.storage.gcs.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -common.storage.gcs.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -common.storage.gcs.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -common.storage.gcs.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -common.storage.gcs.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -common.storage.gcs.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -common.storage.gcs.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -common.storage.gcs.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -common.storage.gcs.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -common.storage.gcs.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -common.storage.gcs.service-account string
     	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path.
+  -common.storage.gcs.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -common.storage.s3.access-key-id string
     	S3 access key ID
   -common.storage.s3.bucket-lookup-type value
@@ -908,19 +1052,19 @@ Usage of ./cmd/mimir/mimir:
   -common.storage.s3.endpoint string
     	The S3 bucket endpoint. It could be an AWS S3 endpoint listed at https://docs.aws.amazon.com/general/latest/gr/s3.html or the address of an S3-compatible service in hostname:port format.
   -common.storage.s3.expect-continue-timeout duration
-    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. 0 to send the request body immediately. (default 1s)
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
   -common.storage.s3.http.idle-conn-timeout duration
-    	The time an idle connection will remain idle before closing. (default 1m30s)
+    	The time an idle connection remains idle before closing. (default 1m30s)
   -common.storage.s3.http.insecure-skip-verify
-    	If the client connects to S3 via HTTPS and this option is enabled, the client will accept any certificate and hostname.
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
   -common.storage.s3.http.response-header-timeout duration
-    	The amount of time the client will wait for a servers response headers. (default 2m0s)
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
   -common.storage.s3.http.tls-ca-path string
-    	Path to the CA certificates to validate server certificate against. If not set, the host's root CA certificates are used.
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
   -common.storage.s3.http.tls-cert-path string
-    	Path to the client certificate, which will be used for authenticating with the server. Also requires the key path to be configured.
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
   -common.storage.s3.http.tls-key-path string
-    	Path to the key for the client certificate. Also requires the client certificate to be configured.
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
   -common.storage.s3.http.tls-server-name string
     	Override the expected name on the server certificate.
   -common.storage.s3.insecure
@@ -928,11 +1072,11 @@ Usage of ./cmd/mimir/mimir:
   -common.storage.s3.list-objects-version string
     	Use a specific version of the S3 list object API. Supported values are v1 or v2. Default is unset.
   -common.storage.s3.max-connections-per-host int
-    	Maximum number of connections per host. 0 means no limit.
+    	Maximum number of connections per host. Set to 0 for no limit.
   -common.storage.s3.max-idle-connections int
-    	Maximum number of idle (keep-alive) connections across all hosts. 0 means no limit. (default 100)
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
   -common.storage.s3.max-idle-connections-per-host int
-    	Maximum number of idle (keep-alive) connections to keep per-host. If 0, a built-in default value is used. (default 100)
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -common.storage.s3.native-aws-auth-enabled
     	[experimental] If enabled, it will use the default authentication methods of the AWS SDK for go based on known environment variables and known AWS config files.
   -common.storage.s3.part-size uint
@@ -958,7 +1102,7 @@ Usage of ./cmd/mimir/mimir:
   -common.storage.s3.sts-endpoint string
     	Accessing S3 resources using temporary, secure credentials provided by AWS Security Token Service.
   -common.storage.s3.tls-handshake-timeout duration
-    	Maximum time to wait for a TLS handshake. 0 means no limit. (default 10s)
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -common.storage.s3.trace.enabled
     	When enabled, low-level S3 HTTP operation information is logged at the debug level.
   -common.storage.swift.application-credential-id string
@@ -1243,8 +1387,12 @@ Usage of ./cmd/mimir/mimir:
     	[experimental] Enable metric relabeling for the tenant. This configuration option can be used to forcefully disable metric relabeling on a per-tenant basis. (default true)
   -distributor.otel-created-timestamp-zero-ingestion-enabled
     	[experimental] Whether to enable translation of OTel start timestamps to Prometheus zero samples in the OTLP endpoint.
+  -distributor.otel-keep-identifying-resource-attributes
+    	[experimental] Whether to keep identifying OTel resource attributes in the target_info metric on top of converting to job and instance labels.
   -distributor.otel-metric-suffixes-enabled
     	Whether to enable automatic suffixes to names of metrics ingested through OTLP.
+  -distributor.otel-promote-resource-attributes comma-separated-list-of-strings
+    	[experimental] Optionally specify OTel resource attributes to promote to labels.
   -distributor.remote-timeout duration
     	Timeout for downstream ingesters. (default 2s)
   -distributor.request-burst-size int
@@ -1350,9 +1498,9 @@ Usage of ./cmd/mimir/mimir:
   -ingest-storage.kafka.address string
     	The Kafka backend address.
   -ingest-storage.kafka.auto-create-topic-default-partitions int
-    	When auto-creation of Kafka topic is enabled and this value is positive, Kafka's num.partitions configuration option is set on Kafka brokers with this value when Mimir component that uses Kafka starts. This configuration option specifies the default number of partitions that the Kafka broker uses for auto-created topics. Note that this is a Kafka-cluster wide setting, and applies to any auto-created topic. If the setting of num.partitions fails, Mimir proceeds anyways, but auto-created topics could have an incorrect number of partitions.
+    	When auto-creation of Kafka topic is enabled and this value is positive, Mimir will create the topic with this number of partitions. When the value is -1 the Kafka broker will use the default number of partitions (num.partitions configuration). (default -1)
   -ingest-storage.kafka.auto-create-topic-enabled
-    	Enable auto-creation of Kafka topic if it doesn't exist. (default true)
+    	Enable auto-creation of Kafka topic on startup if it doesn't exist. If creating the topic fails and the topic doesn't already exist, Mimir will fail to start. (default true)
   -ingest-storage.kafka.client-id string
     	The Kafka client ID.
   -ingest-storage.kafka.consume-from-position-at-startup string
@@ -1365,20 +1513,26 @@ Usage of ./cmd/mimir/mimir:
     	How frequently a consumer should commit the consumed offset to Kafka. The last committed offset is used at startup to continue the consumption from where it was left. (default 1s)
   -ingest-storage.kafka.dial-timeout duration
     	The maximum time allowed to open a connection to a Kafka broker. (default 2s)
-  -ingest-storage.kafka.ingestion-concurrency int
-    	The number of concurrent ingestion streams to the TSDB head. Every tenant has their own set of streams. 0 to disable.
+  -ingest-storage.kafka.fetch-concurrency-max int
+    	The maximum number of concurrent fetch requests that the ingester makes when reading data from Kafka during startup. Concurrent fetch requests are issued only when there is sufficient backlog of records to consume. 0 to disable.
   -ingest-storage.kafka.ingestion-concurrency-batch-size int
-    	The number of timeseries to batch together before ingesting into TSDB. This is only used when -ingest-storage.kafka.ingestion-concurrency is greater than 0. (default 150)
+    	The number of timeseries to batch together before ingesting to the TSDB head. Only use this setting when -ingest-storage.kafka.ingestion-concurrency-max is greater than 0. (default 150)
+  -ingest-storage.kafka.ingestion-concurrency-estimated-bytes-per-sample int
+    	The estimated number of bytes a sample has at time of ingestion. This value is used to estimate the timeseries without decompressing them. Only use this setting when -ingest-storage.kafka.ingestion-concurrency-max is greater than 0. (default 500)
+  -ingest-storage.kafka.ingestion-concurrency-max int
+    	The maximum number of concurrent ingestion streams to the TSDB head. Every tenant has their own set of streams. 0 to disable.
+  -ingest-storage.kafka.ingestion-concurrency-queue-capacity int
+    	The number of batches to prepare and queue to ingest to the TSDB head. Only use this setting when -ingest-storage.kafka.ingestion-concurrency-max is greater than 0. (default 5)
+  -ingest-storage.kafka.ingestion-concurrency-target-flushes-per-shard int
+    	The expected number of times to ingest timeseries to the TSDB head after batching. With fewer flushes, the overhead of splitting up the work is higher than the benefit of parallelization. Only use this setting when -ingest-storage.kafka.ingestion-concurrency-max is greater than 0. (default 80)
   -ingest-storage.kafka.last-produced-offset-poll-interval duration
     	How frequently to poll the last produced offset, used to enforce strong read consistency. (default 1s)
   -ingest-storage.kafka.last-produced-offset-retry-timeout duration
     	How long to retry a failed request to get the last produced offset. (default 10s)
+  -ingest-storage.kafka.max-buffered-bytes int
+    	The maximum number of buffered records ready to be processed. This limit applies to the sum of all inflight requests. Set to 0 to disable the limit. (default 100000000)
   -ingest-storage.kafka.max-consumer-lag-at-startup duration
     	The guaranteed maximum lag before a consumer is considered to have caught up reading from a partition at startup, becomes ACTIVE in the hash ring and passes the readiness check. Set both -ingest-storage.kafka.target-consumer-lag-at-startup and -ingest-storage.kafka.max-consumer-lag-at-startup to 0 to disable waiting for maximum consumer lag being honored at startup. (default 15s)
-  -ingest-storage.kafka.ongoing-fetch-concurrency int
-    	The number of concurrent fetch requests that the ingester makes when reading data continuously from Kafka after startup. Is disabled unless ingest-storage.kafka.startup-fetch-concurrency is greater than 0. 0 to disable.
-  -ingest-storage.kafka.ongoing-records-per-fetch int
-    	The number of records per fetch request that the ingester makes when reading data continuously from Kafka after startup. Depends on ingest-storage.kafka.ongoing-fetch-concurrency being greater than 0. (default 30)
   -ingest-storage.kafka.producer-max-buffered-bytes int
     	The maximum size of (uncompressed) buffered and unacknowledged produced records sent to Kafka. The produce request fails once this limit is reached. This limit is per Kafka client. 0 to disable the limit. (default 1073741824)
   -ingest-storage.kafka.producer-max-record-size-bytes int
@@ -1387,10 +1541,6 @@ Usage of ./cmd/mimir/mimir:
     	The password used to authenticate to Kafka using the SASL plain mechanism. To enable SASL, configure both the username and password.
   -ingest-storage.kafka.sasl-username string
     	The username used to authenticate to Kafka using the SASL plain mechanism. To enable SASL, configure both the username and password.
-  -ingest-storage.kafka.startup-fetch-concurrency int
-    	The number of concurrent fetch requests that the ingester makes when reading data from Kafka during startup. 0 to disable.
-  -ingest-storage.kafka.startup-records-per-fetch int
-    	The number of records per fetch request that the ingester makes when reading data from Kafka during startup. Depends on ingest-storage.kafka.startup-fetch-concurrency being greater than 0. (default 2500)
   -ingest-storage.kafka.target-consumer-lag-at-startup duration
     	The best-effort maximum lag a consumer tries to achieve at startup. Set both -ingest-storage.kafka.target-consumer-lag-at-startup and -ingest-storage.kafka.max-consumer-lag-at-startup to 0 to disable waiting for maximum consumer lag being honored at startup. (default 2s)
   -ingest-storage.kafka.topic string
@@ -1566,7 +1716,7 @@ Usage of ./cmd/mimir/mimir:
   -ingester.push-circuit-breaker.failure-threshold-percentage uint
     	[experimental] Max percentage of requests that can fail over period before the circuit breaker opens (default 10)
   -ingester.push-circuit-breaker.initial-delay duration
-    	[experimental] How long the circuit breaker should wait between an activation request and becoming effectively active. During that time both failures and successes will not be counted.
+    	[experimental] Duration, in seconds, after an initial request that an activated circuit breaker should wait before becoming effectively active. During this time, neither failures nor successes are counted.
   -ingester.push-circuit-breaker.request-timeout duration
     	[experimental] The maximum duration of an ingester's request before it triggers a timeout. This configuration is used for circuit breakers only, and its timeouts aren't reported as errors. (default 2s)
   -ingester.push-circuit-breaker.thresholding-period duration
@@ -1582,7 +1732,7 @@ Usage of ./cmd/mimir/mimir:
   -ingester.read-circuit-breaker.failure-threshold-percentage uint
     	[experimental] Max percentage of requests that can fail over period before the circuit breaker opens (default 10)
   -ingester.read-circuit-breaker.initial-delay duration
-    	[experimental] How long the circuit breaker should wait between an activation request and becoming effectively active. During that time both failures and successes will not be counted.
+    	[experimental] Duration, in seconds, after an initial request that an activated circuit breaker should wait before becoming effectively active. During this time, neither failures nor successes are counted.
   -ingester.read-circuit-breaker.request-timeout duration
     	[experimental] The maximum duration of an ingester's request before it triggers a timeout. This configuration is used for circuit breakers only, and its timeouts aren't reported as errors. (default 30s)
   -ingester.read-circuit-breaker.thresholding-period duration
@@ -1950,19 +2100,21 @@ Usage of ./cmd/mimir/mimir:
   -querier.max-samples int
     	Maximum number of samples a single query can load into memory. This config option should be set on query-frontend too when query sharding is enabled. (default 50000000)
   -querier.mimir-query-engine.enable-aggregation-operations
-    	[experimental] Enable support for aggregation operations in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for aggregation operations in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-binary-logical-operations
-    	[experimental] Enable support for binary logical operations in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for binary logical operations in the Mimir query engine. Only applies if the MQE is in use. (default true)
+  -querier.mimir-query-engine.enable-histogram-quantile-function
+    	[experimental] Enable support for the histogram_quantile function in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-scalar-scalar-binary-comparison-operations
-    	[experimental] Enable support for binary comparison operations between two scalars in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for binary comparison operations between two scalars in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-scalars
-    	[experimental] Enable support for scalars in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for scalars in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-subqueries
-    	[experimental] Enable support for subqueries in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for subqueries in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-vector-scalar-binary-comparison-operations
-    	[experimental] Enable support for binary comparison operations between a vector and a scalar in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for binary comparison operations between a vector and a scalar in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.mimir-query-engine.enable-vector-vector-binary-comparison-operations
-    	[experimental] Enable support for binary comparison operations between two vectors in Mimir's query engine. Only applies if the Mimir query engine is in use. (default true)
+    	[experimental] Enable support for binary comparison operations between two vectors in the Mimir query engine. Only applies if the MQE is in use. (default true)
   -querier.minimize-ingester-requests
     	If true, when querying ingesters, only the minimum required ingesters required to reach quorum will be queried initially, with other ingesters queried only if needed due to failures from the initial set of ingesters. Enabling this option reduces resource consumption for the happy path at the cost of increased latency for the unhappy path. (default true)
   -querier.minimize-ingester-requests-hedging-delay duration
@@ -2051,6 +2203,8 @@ Usage of ./cmd/mimir/mimir:
     	[experimental] Timeout for writing active series responses. 0 means the value from `-server.http-write-timeout` is used. (default 5m0s)
   -query-frontend.align-queries-with-step
     	Mutate incoming queries to align their start and end with their step to improve result caching.
+  -query-frontend.block-promql-experimental-functions
+    	[experimental] True to control access to specific PromQL experimental functions per tenant.
   -query-frontend.cache-errors
     	[experimental] Cache non-transient errors from queries.
   -query-frontend.cache-results
@@ -2059,6 +2213,8 @@ Usage of ./cmd/mimir/mimir:
     	Cache requests that are not step-aligned.
   -query-frontend.downstream-url string
     	URL of downstream Prometheus.
+  -query-frontend.enabled-promql-experimental-functions comma-separated-list-of-strings
+    	[experimental] Enable certain experimental PromQL functions, which are subject to being changed or removed at any time, on a per-tenant basis. Defaults to empty which means all experimental functions are disabled. Set to 'all' to enable all experimental functions.
   -query-frontend.grpc-client-config.backoff-max-period duration
     	Maximum delay when backing off. (default 10s)
   -query-frontend.grpc-client-config.backoff-min-period duration
@@ -2395,8 +2551,32 @@ Usage of ./cmd/mimir/mimir:
     	Azure storage container name
   -ruler-storage.azure.endpoint-suffix string
     	Azure storage endpoint suffix without schema. The account name will be prefixed to this value to create the FQDN. If set to empty string, default endpoint suffix is used.
+  -ruler-storage.azure.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -ruler-storage.azure.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -ruler-storage.azure.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -ruler-storage.azure.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -ruler-storage.azure.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -ruler-storage.azure.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -ruler-storage.azure.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -ruler-storage.azure.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -ruler-storage.azure.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -ruler-storage.azure.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -ruler-storage.azure.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -ruler-storage.azure.max-retries int
     	Number of retries for recoverable errors (default 20)
+  -ruler-storage.azure.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -ruler-storage.azure.user-assigned-id string
     	User assigned managed identity. If empty, then System assigned identity is used.
   -ruler-storage.backend string
@@ -2501,8 +2681,32 @@ Usage of ./cmd/mimir/mimir:
     	Local filesystem storage directory. (default "ruler")
   -ruler-storage.gcs.bucket-name string
     	GCS bucket name
+  -ruler-storage.gcs.expect-continue-timeout duration
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
+  -ruler-storage.gcs.http.idle-conn-timeout duration
+    	The time an idle connection remains idle before closing. (default 1m30s)
+  -ruler-storage.gcs.http.insecure-skip-verify
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
+  -ruler-storage.gcs.http.response-header-timeout duration
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
+  -ruler-storage.gcs.http.tls-ca-path string
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
+  -ruler-storage.gcs.http.tls-cert-path string
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
+  -ruler-storage.gcs.http.tls-key-path string
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
+  -ruler-storage.gcs.http.tls-server-name string
+    	Override the expected name on the server certificate.
+  -ruler-storage.gcs.max-connections-per-host int
+    	Maximum number of connections per host. Set to 0 for no limit.
+  -ruler-storage.gcs.max-idle-connections int
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
+  -ruler-storage.gcs.max-idle-connections-per-host int
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -ruler-storage.gcs.service-account string
     	JSON either from a Google Developers Console client_credentials.json file, or a Google Developers service account key. Needs to be valid JSON, not a filesystem path.
+  -ruler-storage.gcs.tls-handshake-timeout duration
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -ruler-storage.local.directory string
     	Directory to scan for rules
   -ruler-storage.s3.access-key-id string
@@ -2516,19 +2720,19 @@ Usage of ./cmd/mimir/mimir:
   -ruler-storage.s3.endpoint string
     	The S3 bucket endpoint. It could be an AWS S3 endpoint listed at https://docs.aws.amazon.com/general/latest/gr/s3.html or the address of an S3-compatible service in hostname:port format.
   -ruler-storage.s3.expect-continue-timeout duration
-    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. 0 to send the request body immediately. (default 1s)
+    	The time to wait for a server's first response headers after fully writing the request headers if the request has an Expect header. Set to 0 to send the request body immediately. (default 1s)
   -ruler-storage.s3.http.idle-conn-timeout duration
-    	The time an idle connection will remain idle before closing. (default 1m30s)
+    	The time an idle connection remains idle before closing. (default 1m30s)
   -ruler-storage.s3.http.insecure-skip-verify
-    	If the client connects to S3 via HTTPS and this option is enabled, the client will accept any certificate and hostname.
+    	If the client connects to object storage via HTTPS and this option is enabled, the client accepts any certificate and hostname.
   -ruler-storage.s3.http.response-header-timeout duration
-    	The amount of time the client will wait for a servers response headers. (default 2m0s)
+    	The amount of time the client waits for a server's response headers. (default 2m0s)
   -ruler-storage.s3.http.tls-ca-path string
-    	Path to the CA certificates to validate server certificate against. If not set, the host's root CA certificates are used.
+    	Path to the Certificate Authority (CA) certificates to validate the server certificate. If not set, the host's root CA certificates are used.
   -ruler-storage.s3.http.tls-cert-path string
-    	Path to the client certificate, which will be used for authenticating with the server. Also requires the key path to be configured.
+    	Path to the client certificate, which is used for authenticating with the server. This setting also requires you to configure the key path.
   -ruler-storage.s3.http.tls-key-path string
-    	Path to the key for the client certificate. Also requires the client certificate to be configured.
+    	Path to the key for the client certificate. This setting also requires you to configure the client certificate.
   -ruler-storage.s3.http.tls-server-name string
     	Override the expected name on the server certificate.
   -ruler-storage.s3.insecure
@@ -2536,11 +2740,11 @@ Usage of ./cmd/mimir/mimir:
   -ruler-storage.s3.list-objects-version string
     	Use a specific version of the S3 list object API. Supported values are v1 or v2. Default is unset.
   -ruler-storage.s3.max-connections-per-host int
-    	Maximum number of connections per host. 0 means no limit.
+    	Maximum number of connections per host. Set to 0 for no limit.
   -ruler-storage.s3.max-idle-connections int
-    	Maximum number of idle (keep-alive) connections across all hosts. 0 means no limit. (default 100)
+    	Maximum number of idle (keep-alive) connections across all hosts. Set to 0 for no limit. (default 100)
   -ruler-storage.s3.max-idle-connections-per-host int
-    	Maximum number of idle (keep-alive) connections to keep per-host. If 0, a built-in default value is used. (default 100)
+    	Maximum number of idle (keep-alive) connections to keep per-host. Set to 0 to use a built-in default value of 2. (default 100)
   -ruler-storage.s3.native-aws-auth-enabled
     	[experimental] If enabled, it will use the default authentication methods of the AWS SDK for go based on known environment variables and known AWS config files.
   -ruler-storage.s3.part-size uint
@@ -2566,7 +2770,7 @@ Usage of ./cmd/mimir/mimir:
   -ruler-storage.s3.sts-endpoint string
     	Accessing S3 resources using temporary, secure credentials provided by AWS Security Token Service.
   -ruler-storage.s3.tls-handshake-timeout duration
-    	Maximum time to wait for a TLS handshake. 0 means no limit. (default 10s)
+    	Maximum time to wait for a TLS handshake. Set to 0 for no limit. (default 10s)
   -ruler-storage.s3.trace.enabled
     	When enabled, low-level S3 HTTP operation information is logged at the debug level.
   -ruler-storage.storage-prefix string
@@ -2619,6 +2823,18 @@ Usage of ./cmd/mimir/mimir:
     	HTTP Basic authentication password. It overrides the password set in the URL (if any).
   -ruler.alertmanager-client.basic-auth-username string
     	HTTP Basic authentication username. It overrides the username set in the URL (if any).
+  -ruler.alertmanager-client.oauth.client_id string
+    	OAuth2 client ID. Enables the use of OAuth2 for authenticating with Alertmanager.
+  -ruler.alertmanager-client.oauth.client_secret string
+    	OAuth2 client secret.
+  -ruler.alertmanager-client.oauth.endpoint-params value
+    	Optional additional URL parameters to send to the token URL. (default {})
+  -ruler.alertmanager-client.oauth.scopes comma-separated-list-of-strings
+    	Optional scopes to include with the token request.
+  -ruler.alertmanager-client.oauth.token_url string
+    	Endpoint used to fetch access token.
+  -ruler.alertmanager-client.proxy-url string
+    	Optional HTTP, HTTPS via CONNECT, or SOCKS5 proxy URL to route requests through. Applies to all requests, including auxiliary traffic, such as OAuth token requests.
   -ruler.alertmanager-client.tls-ca-path string
     	Path to the CA certificates to validate server certificate against. If not set, the host's root CA certificates are used.
   -ruler.alertmanager-client.tls-cert-path string
@@ -2949,6 +3165,10 @@ Usage of ./cmd/mimir/mimir:
     	Register the intrumentation handlers (/metrics etc). (default true)
   -server.report-grpc-codes-in-instrumentation-label-enabled
     	If set to true, gRPC statuses will be reported in instrumentation labels with their string representations. Otherwise, they will be reported as "error". (default true)
+  -server.throughput.latency-cutoff duration
+    	Requests taking over the cutoff are be observed to measure throughput. Server-Timing header is used with specified unit as the indicator, for example 'Server-Timing: unit;val=8.2'. If set to 0, the throughput is not calculated.
+  -server.throughput.unit string
+    	Unit of the server throughput metric, for example 'processed_bytes' or 'total_samples'. Observed values are gathered from the 'Server-Timing' header with the 'val' key. If set, it is appended to the request_server_throughput metric name. (default "total_samples")
   -server.tls-cipher-suites string
     	Comma-separated list of cipher suites to use. If blank, the default Go cipher suites is used.
   -server.tls-min-version string
@@ -3101,6 +3321,8 @@ Usage of ./cmd/mimir/mimir:
     	Controls how far into the future incoming samples and exemplars are accepted compared to the wall clock. Any sample or exemplar will be rejected if its timestamp is greater than '(now + creation_grace_period)'. This configuration is enforced in the distributor and ingester. (default 10m)
   -validation.enforce-metadata-metric-name
     	Enforce every metadata has a metric name. (default true)
+  -validation.max-label-names-per-info-series int
+    	Maximum number of label names per info series. Has no effect if less than the value of the maximum number of label names per series option (-validation.max-label-names-per-series) (default 80)
   -validation.max-label-names-per-series int
     	Maximum number of label names per series. (default 30)
   -validation.max-length-label-name int

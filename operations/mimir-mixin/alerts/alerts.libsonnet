@@ -296,7 +296,11 @@ local utils = import 'mixin-utils/utils.libsonnet';
           alert: $.alertName('IngesterInstanceHasNoTenants'),
           'for': '1h',
           expr: |||
-            (min by(%(alert_aggregation_labels)s, %(per_instance_label)s) (cortex_ingester_memory_users) == 0)
+            (
+              (min by(%(alert_aggregation_labels)s, %(per_instance_label)s) (cortex_ingester_memory_users) == 0)
+              unless
+              (max by(%(alert_aggregation_labels)s, %(per_instance_label)s) (cortex_lifecycler_read_only) > 0)
+            )
             and on (%(alert_aggregation_labels)s)
             # Only if there are more timeseries than would be expected due to continuous testing load
             (
@@ -871,7 +875,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
           alert: 'EtcdAllocatingTooMuchMemory',
           expr: |||
             (
-              container_memory_working_set_bytes{container="etcd"}
+              container_memory_rss{container="etcd"}
                 /
               ( container_spec_memory_limit_bytes{container="etcd"} > 0 )
             ) > 0.65
@@ -890,7 +894,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
           alert: 'EtcdAllocatingTooMuchMemory',
           expr: |||
             (
-              container_memory_working_set_bytes{container="etcd"}
+              container_memory_rss{container="etcd"}
                 /
               ( container_spec_memory_limit_bytes{container="etcd"} > 0 )
             ) > 0.8

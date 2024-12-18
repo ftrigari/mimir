@@ -16,9 +16,9 @@ package rules
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +27,9 @@ import (
 
 	"github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/common/promslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -45,20 +44,21 @@ import (
 
 // Group is a set of rules that have a logical relation.
 type Group struct {
-	name                 string
-	file                 string
-	interval             time.Duration
-	queryOffset          *time.Duration
-	limit                int
-	rules                []Rule
-	sourceTenants        []string
-	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
-	staleSeries          []labels.Labels
-	opts                 *ManagerOptions
-	mtx                  sync.Mutex
-	evaluationTime       time.Duration
-	lastEvaluation       time.Time // Wall-clock time of most recent evaluation.
-	lastEvalTimestamp    time.Time // Time slot used for most recent evaluation.
+	name                  string
+	file                  string
+	interval              time.Duration
+	queryOffset           *time.Duration
+	limit                 int
+	rules                 []Rule
+	sourceTenants         []string
+	seriesInPreviousEval  []map[string]labels.Labels // One per Rule.
+	staleSeries           []labels.Labels
+	opts                  *ManagerOptions
+	mtx                   sync.Mutex
+	evaluationTime        time.Duration // Time it took to evaluate the group.
+	evaluationRuleTimeSum time.Duration // Sum of time it took to evaluate each rule in the group.
+	lastEvaluation        time.Time     // Wall-clock time of most recent evaluation.
+	lastEvalTimestamp     time.Time     // Time slot used for most recent evaluation.
 
 	shouldRestore bool
 
@@ -67,7 +67,7 @@ type Group struct {
 	terminated  chan struct{}
 	managerDone chan struct{}
 
-	logger log.Logger
+	logger *slog.Logger
 
 	metrics *Metrics
 
@@ -76,8 +76,8 @@ type Group struct {
 	evalIterationFunc GroupEvalIterationFunc
 
 	// concurrencyController controls the rules evaluation concurrency.
-	concurrencyController RuleConcurrencyController
-
+	concurrencyController         RuleConcurrencyController
+	appOpts                       *storage.AppendOptions
 	alignEvaluationTimeOnInterval bool
 }
 
@@ -104,9 +104,13 @@ type GroupOptions struct {
 
 // NewGroup makes a new Group with the given name, options, and rules.
 func NewGroup(o GroupOptions) *Group {
-	metrics := o.Opts.Metrics
+	opts := o.Opts
+	if opts == nil {
+		opts = &ManagerOptions{}
+	}
+	metrics := opts.Metrics
 	if metrics == nil {
-		metrics = NewGroupMetrics(o.Opts.Registerer)
+		metrics = NewGroupMetrics(opts.Registerer)
 	}
 
 	key := GroupKey(o.File, o.Name)
@@ -116,6 +120,7 @@ func NewGroup(o GroupOptions) *Group {
 	metrics.EvalFailures.WithLabelValues(key)
 	metrics.GroupLastEvalTime.WithLabelValues(key)
 	metrics.GroupLastDuration.WithLabelValues(key)
+	metrics.GroupLastRuleDurationSum.WithLabelValues(key)
 	metrics.GroupRules.WithLabelValues(key).Set(float64(len(o.Rules)))
 	metrics.GroupSamples.WithLabelValues(key)
 	metrics.GroupInterval.WithLabelValues(key).Set(o.Interval.Seconds())
@@ -125,30 +130,34 @@ func NewGroup(o GroupOptions) *Group {
 		evalIterationFunc = DefaultEvalIterationFunc
 	}
 
-	concurrencyController := o.Opts.RuleConcurrencyController
+	concurrencyController := opts.RuleConcurrencyController
 	if concurrencyController == nil {
 		concurrencyController = sequentialRuleEvalController{}
 	}
 
-	return &Group{
-		name:                  o.Name,
-		file:                  o.File,
-		interval:              o.Interval,
-		queryOffset:           o.QueryOffset,
-		limit:                 o.Limit,
-		rules:                 o.Rules,
-		shouldRestore:         o.ShouldRestore,
-		opts:                  o.Opts,
-		sourceTenants:         o.SourceTenants,
-		seriesInPreviousEval:  make([]map[string]labels.Labels, len(o.Rules)),
-		done:                  make(chan struct{}),
-		managerDone:           o.done,
-		terminated:            make(chan struct{}),
-		logger:                log.With(o.Opts.Logger, "file", o.File, "group", o.Name),
-		metrics:               metrics,
-		evalIterationFunc:     evalIterationFunc,
-		concurrencyController: concurrencyController,
+	if opts.Logger == nil {
+		opts.Logger = promslog.NewNopLogger()
+	}
 
+	return &Group{
+		name:                          o.Name,
+		file:                          o.File,
+		interval:                      o.Interval,
+		queryOffset:                   o.QueryOffset,
+		limit:                         o.Limit,
+		rules:                         o.Rules,
+		shouldRestore:                 o.ShouldRestore,
+		opts:                          opts,
+		sourceTenants:                 o.SourceTenants,
+		seriesInPreviousEval:          make([]map[string]labels.Labels, len(o.Rules)),
+		done:                          make(chan struct{}),
+		managerDone:                   o.done,
+		terminated:                    make(chan struct{}),
+		logger:                        opts.Logger.With("file", o.File, "group", o.Name),
+		metrics:                       metrics,
+		evalIterationFunc:             evalIterationFunc,
+		concurrencyController:         concurrencyController,
+		appOpts:                       &storage.AppendOptions{DiscardOutOfOrder: true},
 		alignEvaluationTimeOnInterval: o.AlignEvaluationTimeOnInterval,
 	}
 }
@@ -197,7 +206,7 @@ func matchesMatcherSets(matcherSets [][]*labels.Matcher, lbls labels.Labels) boo
 	return ok
 }
 
-// Queryable returns the group's querable.
+// Queryable returns the group's queryable.
 func (g *Group) Queryable() storage.Queryable { return g.opts.Queryable }
 
 // Context returns the group's context.
@@ -213,7 +222,7 @@ func (g *Group) Limit() int { return g.limit }
 // If it's empty or nil, then the owning user/tenant is considered to be the source tenant.
 func (g *Group) SourceTenants() []string { return g.sourceTenants }
 
-func (g *Group) Logger() log.Logger { return g.logger }
+func (g *Group) Logger() *slog.Logger { return g.logger }
 
 func (g *Group) run(ctx context.Context) {
 	defer close(g.terminated)
@@ -285,7 +294,7 @@ func (g *Group) run(ctx context.Context) {
 		g.RestoreForState(restoreStartTime)
 		totalRestoreTimeSeconds := time.Since(restoreStartTime).Seconds()
 		g.metrics.GroupLastRestoreDuration.WithLabelValues(GroupKey(g.file, g.name)).Set(totalRestoreTimeSeconds)
-		level.Debug(g.logger).Log("msg", "'for' state restoration completed", "duration_seconds", totalRestoreTimeSeconds)
+		g.logger.Debug("'for' state restoration completed", "duration_seconds", totalRestoreTimeSeconds)
 		g.shouldRestore = false
 	}
 
@@ -371,6 +380,28 @@ func (g *Group) setEvaluationTime(dur time.Duration) {
 	g.mtx.Lock()
 	defer g.mtx.Unlock()
 	g.evaluationTime = dur
+}
+
+// GetRuleEvaluationTimeSum returns the sum of the time it took to evaluate each rule in the group irrespective of concurrency.
+func (g *Group) GetRuleEvaluationTimeSum() time.Duration {
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	return g.evaluationRuleTimeSum
+}
+
+// updateRuleEvaluationTimeSum updates evaluationRuleTimeSum which is the sum of the time it took to evaluate each rule in the group irrespective of concurrency.
+// It collects the times from the rules themselves.
+func (g *Group) updateRuleEvaluationTimeSum() {
+	var sum time.Duration
+	for _, rule := range g.rules {
+		sum += rule.GetEvaluationDuration()
+	}
+
+	g.metrics.GroupLastRuleDurationSum.WithLabelValues(GroupKey(g.file, g.name)).Set(sum.Seconds())
+
+	g.mtx.Lock()
+	defer g.mtx.Unlock()
+	g.evaluationRuleTimeSum = sum
 }
 
 // GetLastEvaluation returns the time the last evaluation of the rule group took place.
@@ -514,7 +545,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 				defer cleanup()
 			}
 
-			logger := log.WithPrefix(g.logger, "name", rule.Name(), "index", i)
+			logger := g.logger.With("name", rule.Name(), "index", i)
 			ctx, sp := otel.Tracer("").Start(ctx, "rule")
 			sp.SetAttributes(attribute.String("name", rule.Name()))
 			defer func(t time.Time) {
@@ -527,7 +558,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}(time.Now())
 
 			if sp.SpanContext().IsSampled() && sp.SpanContext().HasTraceID() {
-				logger = log.WithPrefix(logger, "trace_id", sp.SpanContext().TraceID())
+				logger = logger.With("trace_id", sp.SpanContext().TraceID())
 			}
 
 			g.metrics.EvalTotal.WithLabelValues(GroupKey(g.File(), g.Name())).Inc()
@@ -543,7 +574,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 				// happens on shutdown and thus we skip logging of any errors here.
 				var eqc promql.ErrQueryCanceled
 				if !errors.As(err, &eqc) {
-					level.Warn(logger).Log("msg", "Evaluating rule failed", "rule", rule, "err", err)
+					logger.Warn("Evaluating rule failed", "rule", rule, "err", err)
 				}
 				return
 			}
@@ -569,7 +600,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 					sp.SetStatus(codes.Error, err.Error())
 					g.metrics.EvalFailures.WithLabelValues(GroupKey(g.File(), g.Name())).Inc()
 
-					level.Warn(logger).Log("msg", "Rule sample appending failed", "err", err)
+					logger.Warn("Rule sample appending failed", "err", err)
 					return
 				}
 				g.seriesInPreviousEval[i] = seriesReturned
@@ -579,6 +610,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 				if s.H != nil {
 					_, err = app.AppendHistogram(0, s.Metric, s.T, nil, s.H)
 				} else {
+					app.SetOptions(g.appOpts)
 					_, err = app.Append(0, s.Metric, s.T, s.F)
 				}
 
@@ -593,15 +625,15 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 					switch {
 					case errors.Is(unwrappedErr, storage.ErrOutOfOrderSample):
 						numOutOfOrder++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						logger.Warn("Rule evaluation result discarded", "err", err, "sample", s)
 					case errors.Is(unwrappedErr, storage.ErrTooOldSample):
 						numTooOld++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						logger.Warn("Rule evaluation result discarded", "err", err, "sample", s)
 					case errors.Is(unwrappedErr, storage.ErrDuplicateSampleForTimestamp):
 						numDuplicates++
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						logger.Warn("Rule evaluation result discarded", "err", err, "sample", s)
 					default:
-						level.Warn(logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
+						logger.Warn("Rule evaluation result discarded", "err", err, "sample", s)
 					}
 				} else {
 					buf := [1024]byte{}
@@ -609,13 +641,13 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 				}
 			}
 			if numOutOfOrder > 0 {
-				level.Warn(logger).Log("msg", "Error on ingesting out-of-order result from rule evaluation", "num_dropped", numOutOfOrder)
+				logger.Warn("Error on ingesting out-of-order result from rule evaluation", "num_dropped", numOutOfOrder)
 			}
 			if numTooOld > 0 {
-				level.Warn(logger).Log("msg", "Error on ingesting too old result from rule evaluation", "num_dropped", numTooOld)
+				logger.Warn("Error on ingesting too old result from rule evaluation", "num_dropped", numTooOld)
 			}
 			if numDuplicates > 0 {
-				level.Warn(logger).Log("msg", "Error on ingesting results from rule evaluation with different value but same timestamp", "num_dropped", numDuplicates)
+				logger.Warn("Error on ingesting results from rule evaluation with different value but same timestamp", "num_dropped", numDuplicates)
 			}
 
 			for metric, lset := range g.seriesInPreviousEval[i] {
@@ -634,7 +666,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 						// Do not count these in logging, as this is expected if series
 						// is exposed from a different rule.
 					default:
-						level.Warn(logger).Log("msg", "Adding stale sample failed", "sample", lset.String(), "err", err)
+						logger.Warn("Adding stale sample failed", "sample", lset.String(), "err", err)
 					}
 				}
 			}
@@ -675,6 +707,7 @@ func (g *Group) cleanupStaleSeries(ctx context.Context, ts time.Time) {
 		return
 	}
 	app := g.opts.Appendable.Appender(ctx)
+	app.SetOptions(g.appOpts)
 	queryOffset := g.QueryOffset()
 	for _, s := range g.staleSeries {
 		// Rule that produced series no longer configured, mark it stale.
@@ -691,11 +724,11 @@ func (g *Group) cleanupStaleSeries(ctx context.Context, ts time.Time) {
 			// Do not count these in logging, as this is expected if series
 			// is exposed from a different rule.
 		default:
-			level.Warn(g.logger).Log("msg", "Adding stale sample for previous configuration failed", "sample", s, "err", err)
+			g.logger.Warn("Adding stale sample for previous configuration failed", "sample", s, "err", err)
 		}
 	}
 	if err := app.Commit(); err != nil {
-		level.Warn(g.logger).Log("msg", "Stale sample appending for previous configuration failed", "err", err)
+		g.logger.Warn("Stale sample appending for previous configuration failed", "err", err)
 	} else {
 		g.staleSeries = nil
 	}
@@ -710,12 +743,12 @@ func (g *Group) RestoreForState(ts time.Time) {
 	mintMS := int64(model.TimeFromUnixNano(mint.UnixNano()))
 	q, err := g.opts.Queryable.Querier(mintMS, maxtMS)
 	if err != nil {
-		level.Error(g.logger).Log("msg", "Failed to get Querier", "err", err)
+		g.logger.Error("Failed to get Querier", "err", err)
 		return
 	}
 	defer func() {
 		if err := q.Close(); err != nil {
-			level.Error(g.logger).Log("msg", "Failed to close Querier", "err", err)
+			g.logger.Error("Failed to close Querier", "err", err)
 		}
 	}()
 
@@ -736,8 +769,8 @@ func (g *Group) RestoreForState(ts time.Time) {
 
 		sset, err := alertRule.QueryForStateSeries(g.opts.Context, q)
 		if err != nil {
-			level.Error(g.logger).Log(
-				"msg", "Failed to restore 'for' state",
+			g.logger.Error(
+				"Failed to restore 'for' state",
 				labels.AlertName, alertRule.Name(),
 				"stage", "Select",
 				"err", err,
@@ -756,7 +789,7 @@ func (g *Group) RestoreForState(ts time.Time) {
 
 		// No results for this alert rule.
 		if len(seriesByLabels) == 0 {
-			level.Debug(g.logger).Log("msg", "No series found to restore the 'for' state of the alert rule", labels.AlertName, alertRule.Name())
+			g.logger.Debug("No series found to restore the 'for' state of the alert rule", labels.AlertName, alertRule.Name())
 			alertRule.SetRestored(true)
 			continue
 		}
@@ -776,7 +809,7 @@ func (g *Group) RestoreForState(ts time.Time) {
 				t, v = it.At()
 			}
 			if it.Err() != nil {
-				level.Error(g.logger).Log("msg", "Failed to restore 'for' state",
+				g.logger.Error("Failed to restore 'for' state",
 					labels.AlertName, alertRule.Name(), "stage", "Iterator", "err", it.Err())
 				return
 			}
@@ -818,7 +851,7 @@ func (g *Group) RestoreForState(ts time.Time) {
 			}
 
 			a.ActiveAt = restoredActiveAt
-			level.Debug(g.logger).Log("msg", "'for' state restored",
+			g.logger.Debug("'for' state restored",
 				labels.AlertName, alertRule.Name(), "restored_time", a.ActiveAt.Format(time.RFC850),
 				"labels", a.Labels.String())
 		})
@@ -871,7 +904,7 @@ func (g *Group) Equals(ng *Group) bool {
 		copyAndSort := func(x []string) []string {
 			copied := make([]string, len(x))
 			copy(copied, x)
-			sort.Strings(copied)
+			slices.Sort(copied)
 			return copied
 		}
 
@@ -907,6 +940,7 @@ type Metrics struct {
 	GroupInterval            *prometheus.GaugeVec
 	GroupLastEvalTime        *prometheus.GaugeVec
 	GroupLastDuration        *prometheus.GaugeVec
+	GroupLastRuleDurationSum *prometheus.GaugeVec
 	GroupLastRestoreDuration *prometheus.GaugeVec
 	GroupRules               *prometheus.GaugeVec
 	GroupSamples             *prometheus.GaugeVec
@@ -985,6 +1019,14 @@ func NewGroupMetrics(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"rule_group"},
 		),
+		GroupLastRuleDurationSum: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "rule_group_last_rule_duration_sum_seconds",
+				Help:      "The sum of time in seconds it took to evaluate each rule in the group regardless of concurrency. This should be higher than the group duration if rules are evaluated concurrently.",
+			},
+			[]string{"rule_group"},
+		),
 		GroupLastRestoreDuration: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
@@ -1022,6 +1064,7 @@ func NewGroupMetrics(reg prometheus.Registerer) *Metrics {
 			m.GroupInterval,
 			m.GroupLastEvalTime,
 			m.GroupLastDuration,
+			m.GroupLastRuleDurationSum,
 			m.GroupLastRestoreDuration,
 			m.GroupRules,
 			m.GroupSamples,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-kit/log/level"
@@ -20,7 +21,6 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/stats"
-	"golang.org/x/exp/slices"
 
 	"github.com/grafana/mimir/pkg/streamingpromql/compat"
 	"github.com/grafana/mimir/pkg/streamingpromql/limiting"
@@ -287,7 +287,7 @@ func (q *Query) convertToInstantVectorOperator(expr parser.Expr, timeRange types
 			return nil, err
 		}
 
-		return unaryNegationOfInstantVectorOperatorFactory(inner, q.memoryConsumptionTracker, e.PositionRange()), nil
+		return unaryNegationOfInstantVectorOperatorFactory(inner, q.memoryConsumptionTracker, e.PositionRange(), timeRange), nil
 
 	case *parser.StepInvariantExpr:
 		// One day, we'll do something smarter here.
@@ -300,6 +300,13 @@ func (q *Query) convertToInstantVectorOperator(expr parser.Expr, timeRange types
 }
 
 func (q *Query) convertFunctionCallToInstantVectorOperator(e *parser.Call, timeRange types.QueryTimeRange) (types.InstantVectorOperator, error) {
+	// Handle special toggles for classic histograms
+	if !q.engine.featureToggles.EnableHistogramQuantileFunction {
+		if e.Func.Name == "histogram_quantile" {
+			return nil, compat.NewNotSupportedError(fmt.Sprintf("'%s' function", e.Func.Name))
+		}
+	}
+
 	factory, ok := instantVectorFunctionOperatorFactories[e.Func.Name]
 	if !ok {
 		return nil, compat.NewNotSupportedError(fmt.Sprintf("'%s' function", e.Func.Name))
@@ -659,6 +666,9 @@ func (q *Query) populateVectorFromInstantVectorOperator(ctx context.Context, o t
 				T:      ts,
 				H:      point.H,
 			})
+
+			// Remove histogram from slice to ensure it's not mutated when the slice is reused.
+			d.Histograms[0].H = nil
 		} else {
 			types.PutInstantVectorSeriesData(d, q.memoryConsumptionTracker)
 
@@ -730,14 +740,20 @@ func (q *Query) populateMatrixFromRangeVectorOperator(ctx context.Context, o typ
 			return nil, err
 		}
 
-		floats, err := step.Floats.CopyPoints(step.RangeEnd)
+		floats, err := step.Floats.CopyPoints()
 		if err != nil {
 			return nil, err
 		}
 
-		histograms, err := step.Histograms.CopyPoints(step.RangeEnd)
+		histograms, err := step.Histograms.CopyPoints()
 		if err != nil {
 			return nil, err
+		}
+
+		if len(floats) == 0 && len(histograms) == 0 {
+			types.FPointSlicePool.Put(floats, q.memoryConsumptionTracker)
+			types.HPointSlicePool.Put(histograms, q.memoryConsumptionTracker)
+			continue
 		}
 
 		m = append(m, promql.Series{
@@ -795,6 +811,8 @@ func (q *Query) Close() {
 		types.VectorPool.Put(v, q.memoryConsumptionTracker)
 	case promql.Scalar:
 		// Nothing to do, we already returned the slice in populateScalarFromScalarOperator.
+	case promql.String:
+		// Nothing to do as strings don't come from a pool
 	default:
 		panic(fmt.Sprintf("unknown result value type %T", q.result.Value))
 	}

@@ -16,9 +16,7 @@ ingest_storage:
     topic:   mimir-ingest
     last_produced_offset_poll_interval: 500ms
     startup_fetch_concurrency: 15
-    startup_records_per_fetch: 2400
     ongoing_fetch_concurrency: 2
-    ongoing_records_per_fetch: 30
 
 ingester:
   track_ingester_owned_series: true
@@ -81,7 +79,6 @@ ruler_storage:
 
 query_scheduler:
   service_discovery_mode: "ring"
-  prioritize_query_components: true
 
 alertmanager:
   data_dir: /data/alertmanager

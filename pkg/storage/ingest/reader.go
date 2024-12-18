@@ -12,6 +12,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/backoff"
+	"github.com/grafana/dskit/instrument"
 	"github.com/grafana/dskit/multierror"
 	"github.com/grafana/dskit/services"
 	"github.com/opentracing/opentracing-go"
@@ -38,6 +39,9 @@ const (
 	// This is usually used when there aren't enough records available to fulfil MinBytes, so the broker waits for more records to be produced.
 	// Warpstream clamps this between 5s and 30s.
 	defaultMinBytesMaxWaitTime = 5 * time.Second
+
+	// ReaderMetricsPrefix is the reader metrics prefix used by the ingest storage.
+	ReaderMetricsPrefix = "cortex_ingest_storage_reader"
 )
 
 var (
@@ -79,8 +83,11 @@ type PartitionReader struct {
 	consumerGroup                         string
 	concurrentFetchersMinBytesMaxWaitTime time.Duration
 
-	client  *kgo.Client
-	fetcher fetcher
+	// client and fetcher are both start after PartitionReader creation. Fetcher could also be
+	// replaced during PartitionReader lifetime. To avoid concurrency issues with functions
+	// getting their pointers (e.g. BufferedRecords()) we use atomic to protect.
+	client  atomic.Pointer[kgo.Client]
+	fetcher atomic.Pointer[fetcher]
 
 	newConsumer consumerFactory
 	metrics     readerMetrics
@@ -92,8 +99,9 @@ type PartitionReader struct {
 	consumedOffsetWatcher *partitionOffsetWatcher
 	offsetReader          *partitionOffsetReader
 
-	logger log.Logger
-	reg    prometheus.Registerer
+	logger         log.Logger
+	reg            prometheus.Registerer
+	lastSeenOffset int64
 }
 
 func NewPartitionReaderForPusher(kafkaCfg KafkaConfig, partitionID int32, instanceID string, pusher Pusher, logger log.Logger, reg prometheus.Registerer) (*PartitionReader, error) {
@@ -110,12 +118,13 @@ func newPartitionReader(kafkaCfg KafkaConfig, partitionID int32, instanceID stri
 		partitionID:                           partitionID,
 		newConsumer:                           consumer,
 		consumerGroup:                         kafkaCfg.GetConsumerGroup(instanceID, partitionID),
-		metrics:                               newReaderMetrics(partitionID, reg),
 		consumedOffsetWatcher:                 newPartitionOffsetWatcher(),
 		concurrentFetchersMinBytesMaxWaitTime: defaultMinBytesMaxWaitTime,
 		logger:                                log.With(logger, "partition", partitionID),
 		reg:                                   reg,
 	}
+
+	r.metrics = newReaderMetrics(partitionID, reg, r)
 
 	r.Service = services.NewBasicService(r.start, r.run, r.stop)
 	return r, nil
@@ -126,14 +135,47 @@ func (r *PartitionReader) Stop() {
 	// Given the partition reader has no concurrency it doesn't support stopping anything.
 }
 
-// Update implements fetcher
-func (r *PartitionReader) Update(_ context.Context, _, _ int) {
-	// Given the partition reader has no concurrency it doesn't support updates.
+func (r *PartitionReader) BufferedRecords() int64 {
+	var fcount, ccount int64
+
+	if f := r.getFetcher(); f != nil && f != r {
+		fcount = f.BufferedRecords()
+	}
+
+	if c := r.client.Load(); c != nil {
+		ccount = c.BufferedFetchRecords()
+	}
+
+	return fcount + ccount
+}
+
+func (r *PartitionReader) BufferedBytes() int64 {
+	var fcount, ccount int64
+
+	if f := r.getFetcher(); f != nil && f != r {
+		fcount = f.BufferedBytes()
+	}
+
+	if c := r.client.Load(); c != nil {
+		ccount = c.BufferedFetchBytes()
+	}
+
+	return fcount + ccount
+}
+
+func (r *PartitionReader) EstimatedBytesPerRecord() int64 {
+	if f := r.getFetcher(); f != nil && f != r {
+		return f.EstimatedBytesPerRecord()
+	}
+
+	return 0
 }
 
 func (r *PartitionReader) start(ctx context.Context) (returnErr error) {
 	if r.kafkaCfg.AutoCreateTopicEnabled {
-		setDefaultNumberOfPartitionsForAutocreatedTopics(r.kafkaCfg, r.logger)
+		if err := CreateTopic(r.kafkaCfg, r.logger); err != nil {
+			return err
+		}
 	}
 
 	// Stop dependencies if the start() fails.
@@ -148,18 +190,23 @@ func (r *PartitionReader) start(ctx context.Context) (returnErr error) {
 		return err
 	}
 
+	// lastConsumedOffset could be a special negative offset (e.g. partition start, or partition end).
+	r.lastSeenOffset = lastConsumedOffset
 	// Initialise the last consumed offset only if we've got an actual offset from the consumer group.
 	if lastConsumedOffset >= 0 {
 		r.consumedOffsetWatcher.Notify(lastConsumedOffset)
 	}
 
-	r.client, err = r.newKafkaReader(kgo.NewOffset().At(startOffset))
+	// Create a Kafka client without configuring any partition to consume (it will be done later).
+	client, err := NewKafkaReaderClient(r.kafkaCfg, r.metrics.kprom, r.logger)
 	if err != nil {
 		return errors.Wrap(err, "creating kafka reader client")
 	}
-	r.committer = newPartitionCommitter(r.kafkaCfg, kadm.NewClient(r.client), r.partitionID, r.consumerGroup, r.logger, r.reg)
+	r.client.Store(client)
 
-	offsetsClient := newPartitionOffsetClient(r.client, r.kafkaCfg.Topic, r.reg, r.logger)
+	r.committer = newPartitionCommitter(r.kafkaCfg, kadm.NewClient(r.client.Load()), r.partitionID, r.consumerGroup, r.logger, r.reg)
+
+	offsetsClient := newPartitionOffsetClient(r.client.Load(), r.kafkaCfg.Topic, r.reg, r.logger)
 
 	// It's ok to have the start offset slightly outdated.
 	// We only need this offset accurate if we fall behind or if we start and the log gets truncated from beneath us.
@@ -173,7 +220,7 @@ func (r *PartitionReader) start(ctx context.Context) (returnErr error) {
 
 	r.offsetReader = newPartitionOffsetReaderWithOffsetClient(offsetsClient, r.partitionID, r.kafkaCfg.LastProducedOffsetPollInterval, r.logger)
 
-	r.dependencies, err = services.NewManager(r.committer, r.offsetReader, r.consumedOffsetWatcher, startOffsetReader)
+	r.dependencies, err = services.NewManager(r.committer, r.offsetReader, r.consumedOffsetWatcher, startOffsetReader, r.metrics)
 	if err != nil {
 		return errors.Wrap(err, "creating service manager")
 	}
@@ -184,14 +231,34 @@ func (r *PartitionReader) start(ctx context.Context) (returnErr error) {
 		return errors.Wrap(err, "starting service manager")
 	}
 
-	if r.kafkaCfg.StartupFetchConcurrency > 0 {
-		f, err := newConcurrentFetchers(ctx, r.client, r.logger, r.kafkaCfg.Topic, r.partitionID, startOffset, r.kafkaCfg.StartupFetchConcurrency, r.kafkaCfg.StartupRecordsPerFetch, r.kafkaCfg.UseCompressedBytesAsFetchMaxBytes, r.concurrentFetchersMinBytesMaxWaitTime, offsetsClient, startOffsetReader, &r.metrics)
+	if r.kafkaCfg.FetchConcurrencyMax > 0 {
+		// When concurrent fetch is enabled we manually fetch from the partition so we don't want the Kafka
+		// client to buffer any record. However, we still want to configure partition consumption so that
+		// the partition metadata is kept updated by the client (our concurrent fetcher requires metadata to
+		// get the partition leader).
+		//
+		// To make it happen, we do pause the fetching first and then we configure consumption. The consumption
+		// will be kept paused until the explicit ResumeFetchPartitions() is called.
+		r.client.Load().PauseFetchPartitions(map[string][]int32{
+			r.kafkaCfg.Topic: {r.partitionID},
+		})
+		r.client.Load().AddConsumePartitions(map[string]map[int32]kgo.Offset{
+			r.kafkaCfg.Topic: {r.partitionID: kgo.NewOffset().At(startOffset)},
+		})
+
+		f, err := newConcurrentFetchers(ctx, r.client.Load(), r.logger, r.kafkaCfg.Topic, r.partitionID, startOffset, r.kafkaCfg.FetchConcurrencyMax, int32(r.kafkaCfg.MaxBufferedBytes), r.kafkaCfg.UseCompressedBytesAsFetchMaxBytes, r.concurrentFetchersMinBytesMaxWaitTime, offsetsClient, startOffsetReader, r.kafkaCfg.concurrentFetchersFetchBackoffConfig, &r.metrics)
 		if err != nil {
 			return errors.Wrap(err, "creating concurrent fetchers during startup")
 		}
-		r.fetcher = f
+		r.setFetcher(f)
 	} else {
-		r.fetcher = r
+		// When concurrent fetch is disabled we read records directly from the Kafka client, so we want it
+		// to consume the partition.
+		r.client.Load().AddConsumePartitions(map[string]map[int32]kgo.Offset{
+			r.kafkaCfg.Topic: {r.partitionID: kgo.NewOffset().At(startOffset)},
+		})
+
+		r.setFetcher(r)
 	}
 
 	// Enforce the max consumer lag (if enabled).
@@ -221,20 +288,18 @@ func (r *PartitionReader) stopDependencies() error {
 		}
 	}
 
-	if r.fetcher != nil {
-		r.fetcher.Stop()
+	if f := r.getFetcher(); f != nil {
+		f.Stop()
 	}
 
-	if r.client != nil {
-		r.client.Close()
+	if c := r.client.Load(); c != nil {
+		c.Close()
 	}
 
 	return nil
 }
 
 func (r *PartitionReader) run(ctx context.Context) error {
-	r.switchToOngoingFetcher(ctx)
-
 	for ctx.Err() == nil {
 		err := r.processNextFetches(ctx, r.metrics.receiveDelayWhenRunning)
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -246,57 +311,17 @@ func (r *PartitionReader) run(ctx context.Context) error {
 	return nil
 }
 
-func (r *PartitionReader) switchToOngoingFetcher(ctx context.Context) {
-	if r.kafkaCfg.StartupFetchConcurrency == r.kafkaCfg.OngoingFetchConcurrency && r.kafkaCfg.StartupRecordsPerFetch == r.kafkaCfg.OngoingRecordsPerFetch {
-		// we're already using the same settings, no need to switch
-		return
-	}
-
-	if r.kafkaCfg.StartupFetchConcurrency > 0 && r.kafkaCfg.OngoingFetchConcurrency > 0 {
-		// No need to switch the fetcher, just update the records per fetch.
-		r.fetcher.Update(ctx, r.kafkaCfg.OngoingFetchConcurrency, r.kafkaCfg.OngoingRecordsPerFetch)
-		return
-	}
-
-	if r.kafkaCfg.StartupFetchConcurrency > 0 && r.kafkaCfg.OngoingFetchConcurrency == 0 {
-		// Stop the current fetcher before replacing it.
-		r.fetcher.Stop()
-
-		if r.fetcher == r {
-			// This method has been called before, no need to switch the fetcher.
-			return
-		}
-		// We need to switch to franz-go for ongoing fetches.
-		// If we've already fetched some records, we should discard them from franz-go and start from the last consumed offset.
-		r.fetcher = r
-
-		lastConsumed := r.consumedOffsetWatcher.LastConsumedOffset()
-		if lastConsumed == -1 {
-			// We haven't consumed any records yet with the other fetcher.
-			// The franz-go client is initialized to start consuming from the same place as the other fetcher.
-			// We can just use the client.
-			return
-		}
-
-		// The client might have some buffered records already while we were using the other fetcher.
-		// Remove the buffered records.
-		r.client.RemoveConsumePartitions(map[string][]int32{
-			r.kafkaCfg.Topic: {r.partitionID},
-		})
-		// Resume from the next unconsumed offset.
-		r.client.AddConsumePartitions(map[string]map[int32]kgo.Offset{
-			r.kafkaCfg.Topic: {r.partitionID: kgo.NewOffset().At(lastConsumed + 1)},
-		})
-	}
-}
-
 func (r *PartitionReader) processNextFetches(ctx context.Context, delayObserver prometheus.Observer) error {
-	fetches, fetchCtx := r.fetcher.PollFetches(ctx)
+	fetches, fetchCtx := r.getFetcher().PollFetches(ctx)
 	// Propagate the fetching span to consuming the records.
 	ctx = opentracing.ContextWithSpan(ctx, opentracing.SpanFromContext(fetchCtx))
 	r.recordFetchesMetrics(fetches, delayObserver)
 	r.logFetchErrors(fetches)
 	fetches = filterOutErrFetches(fetches)
+
+	// instrument only after we've done all pre-processing of records. We don't expect the set of records to change beyond this point.
+	instrumentGaps(findGapsInRecords(fetches, r.lastSeenOffset), r.metrics.missedRecords, r.logger)
+	r.lastSeenOffset = max(r.lastSeenOffset, lastOffset(fetches))
 
 	err := r.consumeFetches(ctx, fetches)
 	if err != nil {
@@ -305,6 +330,14 @@ func (r *PartitionReader) processNextFetches(ctx context.Context, delayObserver 
 	r.enqueueCommit(fetches)
 	r.notifyLastConsumedOffset(fetches)
 	return nil
+}
+
+func lastOffset(fetches kgo.Fetches) int64 {
+	var o int64
+	fetches.EachRecord(func(record *kgo.Record) {
+		o = record.Offset
+	})
+	return o
 }
 
 // processNextFetchesUntilTargetOrMaxLagHonored process records from Kafka until at least the maxLag is honored.
@@ -327,10 +360,6 @@ func (r *PartitionReader) processNextFetchesUntilTargetOrMaxLagHonored(ctx conte
 		func() (time.Duration, error) {
 			timedCtx, cancel := context.WithTimeoutCause(ctx, 2*maxLag, errWaitTargetLagDeadlineExceeded)
 			defer cancel()
-
-			// Don't use timedCtx because we want the fetchers to continue running
-			// At this point we're close enough to the end of the partition that we should switch to the more responsive fetcher.
-			r.switchToOngoingFetcher(ctx)
 
 			return r.processNextFetchesUntilLagHonored(timedCtx, targetLag, logger)
 		},
@@ -530,7 +559,7 @@ func (r *PartitionReader) consumeFetches(ctx context.Context, fetches kgo.Fetche
 		MaxRetries: 0, // retry forever
 	})
 	defer func(consumeStart time.Time) {
-		r.metrics.consumeLatency.Observe(time.Since(consumeStart).Seconds())
+		instrument.ObserveWithExemplar(ctx, r.metrics.consumeLatency, time.Since(consumeStart).Seconds())
 	}(time.Now())
 
 	logger := spanlogger.FromContext(ctx, r.logger)
@@ -596,14 +625,6 @@ func (r *PartitionReader) recordFetchesMetrics(fetches kgo.Fetches, delayObserve
 
 	r.metrics.fetchesTotal.Add(float64(len(fetches)))
 	r.metrics.recordsPerFetch.Observe(float64(numRecords))
-}
-
-func (r *PartitionReader) newKafkaReader(at kgo.Offset) (*kgo.Client, error) {
-	return NewKafkaReaderClient(r.kafkaCfg, r.metrics.kprom, r.logger,
-		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{
-			r.kafkaCfg.Topic: {r.partitionID: at},
-		}),
-	)
 }
 
 func (r *PartitionReader) getStartOffset(ctx context.Context) (startOffset, lastConsumedOffset int64, err error) {
@@ -771,11 +792,24 @@ func (r *PartitionReader) waitReadConsistency(ctx context.Context, withOffset bo
 	return err
 }
 
+func (r *PartitionReader) setFetcher(f fetcher) {
+	r.fetcher.Store(&f)
+}
+
+func (r *PartitionReader) getFetcher() fetcher {
+	pointer := r.fetcher.Load()
+	if pointer == nil {
+		return nil
+	}
+
+	return *pointer
+}
+
 func (r *PartitionReader) PollFetches(ctx context.Context) (result kgo.Fetches, fetchContext context.Context) {
 	defer func(start time.Time) {
 		r.metrics.fetchWaitDuration.Observe(time.Since(start).Seconds())
 	}(time.Now())
-	return r.client.PollFetches(ctx), ctx
+	return r.client.Load().PollFetches(ctx), ctx
 }
 
 type partitionCommitter struct {
@@ -909,6 +943,11 @@ func (r *partitionCommitter) stop(error) error {
 }
 
 type readerMetrics struct {
+	services.Service
+
+	bufferedFetchedRecords           prometheus.GaugeFunc
+	bufferedFetchedBytes             prometheus.GaugeFunc
+	estimatedBytesPerRecord          prometheus.Histogram
 	receiveDelayWhenStarting         prometheus.Observer
 	receiveDelayWhenRunning          prometheus.Observer
 	recordsPerFetch                  prometheus.Histogram
@@ -920,9 +959,16 @@ type readerMetrics struct {
 	lastConsumedOffset               prometheus.Gauge
 	consumeLatency                   prometheus.Histogram
 	kprom                            *kprom.Metrics
+	missedRecords                    prometheus.Counter
 }
 
-func newReaderMetrics(partitionID int32, reg prometheus.Registerer) readerMetrics {
+type readerMetricsSource interface {
+	BufferedBytes() int64
+	BufferedRecords() int64
+	EstimatedBytesPerRecord() int64
+}
+
+func newReaderMetrics(partitionID int32, reg prometheus.Registerer, metricsSource readerMetricsSource) readerMetrics {
 	const component = "partition-reader"
 
 	receiveDelay := promauto.With(reg).NewHistogramVec(prometheus.HistogramOpts{
@@ -944,7 +990,20 @@ func newReaderMetrics(partitionID int32, reg prometheus.Registerer) readerMetric
 	// Initialise the last consumed offset metric to -1 to signal no offset has been consumed yet (0 is a valid offset).
 	lastConsumedOffset.Set(-1)
 
-	return readerMetrics{
+	m := readerMetrics{
+		bufferedFetchedRecords: promauto.With(reg).NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "cortex_ingest_storage_reader_buffered_fetched_records",
+			Help: "The number of records fetched from Kafka by both concurrent fetchers and the Kafka client but not yet processed.",
+		}, func() float64 { return float64(metricsSource.BufferedRecords()) }),
+		bufferedFetchedBytes: promauto.With(reg).NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "cortex_ingest_storage_reader_buffered_fetched_bytes",
+			Help: "The number of bytes fetched or requested from Kafka by both concurrent fetchers and the Kafka client but not yet processed. The value depends on -ingest-storage.kafka.use-compressed-bytes-as-fetch-max-bytes.",
+		}, func() float64 { return float64(metricsSource.BufferedBytes()) }),
+		estimatedBytesPerRecord: promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
+			Name:                        "cortex_ingest_storage_reader_estimated_bytes_per_record",
+			Help:                        "Observations with the current size estimation of records fetched from Kafka. Sampled at 10Hz.",
+			NativeHistogramBucketFactor: 1.1,
+		}),
 		receiveDelayWhenStarting: receiveDelay.WithLabelValues("starting"),
 		receiveDelayWhenRunning:  receiveDelay.WithLabelValues("running"),
 		recordsPerFetch: promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
@@ -971,13 +1030,23 @@ func newReaderMetrics(partitionID int32, reg prometheus.Registerer) readerMetric
 		}),
 		consumeLatency: promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
 			Name:                        "cortex_ingest_storage_reader_records_batch_process_duration_seconds",
-			Help:                        "How long a consumer spent processing a batch of records from Kafka.",
+			Help:                        "How long a consumer spent processing a batch of records from Kafka. This includes retries on server errors.",
 			NativeHistogramBucketFactor: 1.1,
 		}),
 		strongConsistencyInstrumentation: NewStrongReadConsistencyInstrumentation[struct{}](component, reg),
 		lastConsumedOffset:               lastConsumedOffset,
-		kprom:                            NewKafkaReaderClientMetrics(component, reg),
+		kprom:                            NewKafkaReaderClientMetrics(ReaderMetricsPrefix, component, reg),
+		missedRecords: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "cortex_ingest_storage_reader_missed_records_total",
+			Help: "The number of offsets that were never consumed by the reader because they weren't fetched.",
+		}),
 	}
+
+	m.Service = services.NewTimerService(100*time.Millisecond, nil, func(context.Context) error {
+		m.estimatedBytesPerRecord.Observe(float64(metricsSource.EstimatedBytesPerRecord()))
+		return nil
+	}, nil)
+	return m
 }
 
 type StrongReadConsistencyInstrumentation[T any] struct {

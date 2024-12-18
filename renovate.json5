@@ -3,7 +3,7 @@
     "extends": [
       "config:base"
     ],
-    "baseBranches": ["main", "release-2.14", "release-2.13"],
+    "baseBranches": ["main", "release-2.15", "release-2.14", "release-2.13"],
     "postUpdateOptions": [
       "gomodTidy",
       "gomodUpdateImportPaths"
@@ -11,7 +11,7 @@
     "schedule": ["before 9am on Monday"],
     "packageRules": [
       {
-        "matchBaseBranches": ["release-2.14", "release-2.13"],
+        "matchBaseBranches": ["release-2.15", "release-2.14", "release-2.13"],
         "packagePatterns": ["*"],
         "enabled": false
       },
@@ -33,6 +33,13 @@
         "matchDatasources": ["docker", "golang-version"],
         "matchPackageNames": ["go", "golang"],
         "allowedVersions": "<=1.22.5"
+      },
+      // Keep deps for the dashboard screenshotting tool up to date
+      {
+        "description": "Enable updating Node.js dependencies in operations/mimir-mixin-tools/screenshots",
+        "paths": ["operations/mimir-mixin-tools/screenshots"],
+        "managers": ["npm"],
+        "enabled": true
       }
     ],
     "branchPrefix": "deps-update/",

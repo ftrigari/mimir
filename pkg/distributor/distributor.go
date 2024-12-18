@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +45,6 @@ import (
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/scrape"
 	"go.uber.org/atomic"
-	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/grafana/mimir/pkg/cardinality"
@@ -53,6 +53,7 @@ import (
 	"github.com/grafana/mimir/pkg/querier/stats"
 	"github.com/grafana/mimir/pkg/storage/ingest"
 	"github.com/grafana/mimir/pkg/util"
+	"github.com/grafana/mimir/pkg/util/extract"
 	"github.com/grafana/mimir/pkg/util/globalerror"
 	mimir_limiter "github.com/grafana/mimir/pkg/util/limiter"
 	util_math "github.com/grafana/mimir/pkg/util/math"
@@ -60,6 +61,11 @@ import (
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"github.com/grafana/mimir/pkg/util/validation"
 )
+
+func init() {
+	// Mimir doesn't support Prometheus' UTF-8 metric/label name scheme yet.
+	model.NameValidationScheme = model.LegacyValidation
+}
 
 var (
 	// Validation errors.
@@ -107,7 +113,7 @@ type Distributor struct {
 	healthyInstancesCount  *atomic.Uint32
 
 	// For handling HA replicas.
-	HATracker *haTracker
+	HATracker haTracker
 
 	// Per-user rate limiters.
 	requestRateLimiter   *limiter.RateLimiter
@@ -177,6 +183,19 @@ type Distributor struct {
 
 	// partitionsRing is the hash ring holding ingester partitions. It's used when ingest storage is enabled.
 	partitionsRing *ring.PartitionInstanceRing
+
+	// For testing functionality that relies on timing without having to sleep in unit tests.
+	sleep func(time.Duration)
+	now   func() time.Time
+}
+
+func defaultSleep(d time.Duration) { time.Sleep(d) }
+func defaultNow() time.Time        { return time.Now() }
+
+// OTelResourceAttributePromotionConfig contains methods for configuring OTel resource attribute promotion.
+type OTelResourceAttributePromotionConfig interface {
+	// PromoteOTelResourceAttributes returns which OTel resource attributes to promote for tenant ID.
+	PromoteOTelResourceAttributes(id string) []string
 }
 
 // Config contains the configuration required to
@@ -227,6 +246,9 @@ type Config struct {
 
 	WriteRequestsBufferPoolingEnabled bool `yaml:"write_requests_buffer_pooling_enabled" category:"experimental"`
 	ReusableIngesterPushWorkers       int  `yaml:"reusable_ingester_push_workers" category:"advanced"`
+
+	// OTelResourceAttributePromotionConfig allows for specializing OTel resource attribute promotion.
+	OTelResourceAttributePromotionConfig OTelResourceAttributePromotionConfig `yaml:"-"`
 }
 
 // PushWrapper wraps around a push. It is similar to middleware.Interface.
@@ -315,15 +337,7 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 	}
 
 	cfg.PoolConfig.RemoteTimeout = cfg.RemoteTimeout
-
-	haTracker, err := newHATracker(cfg.HATrackerConfig, limits, reg, log)
-	if err != nil {
-		return nil, err
-	}
-
 	subservices := []services.Service(nil)
-	subservices = append(subservices, haTracker)
-
 	requestBufferPool := util.NewBufferPool(cfg.MaxRequestPoolBufferSize)
 
 	d := &Distributor{
@@ -335,7 +349,6 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 		ingesterPool:          NewPool(cfg.PoolConfig, ingestersRing, cfg.IngesterClientFactory, log),
 		healthyInstancesCount: atomic.NewUint32(0),
 		limits:                limits,
-		HATracker:             haTracker,
 		ingestionRate:         util_math.NewEWMARate(0.2, instanceIngestionRateTickInterval),
 
 		queryDuration: instrument.NewHistogramCollector(promauto.With(reg).NewHistogramVec(prometheus.HistogramOpts{
@@ -432,6 +445,8 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 		}),
 
 		PushMetrics: newPushMetrics(reg),
+		now:         defaultNow,
+		sleep:       defaultSleep,
 	}
 
 	// Initialize expected rejected request labels
@@ -489,6 +504,7 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 	var ingestionRateStrategy, requestRateStrategy limiter.RateLimiterStrategy
 	var distributorsLifecycler *ring.BasicLifecycler
 	var distributorsRing *ring.Ring
+	var err error
 
 	if !canJoinDistributorsRing {
 		requestRateStrategy = newInfiniteRateStrategy()
@@ -504,10 +520,28 @@ func New(cfg Config, clientConfig ingester_client.Config, limits *validation.Ove
 		ingestionRateStrategy = newGlobalRateStrategyWithBurstFactor(limits, d)
 	}
 
+	// If this isn't a real distributor that will be accepting writes or if the HA tracker is
+	// disabled, use a no-op implementation. We don't want to require it to be configured when
+	// it's not used due to being disabled or this being a component that doesn't use it (rulers,
+	// queriers).
+	var haTrackerImpl haTracker
+
+	if !canJoinDistributorsRing || !cfg.HATrackerConfig.EnableHATracker {
+		haTrackerImpl = newNopHaTracker()
+	} else {
+		haTrackerImpl, err = newHaTracker(cfg.HATrackerConfig, limits, reg, log)
+		if err != nil {
+			return nil, err
+		}
+
+		subservices = append(subservices, haTrackerImpl)
+	}
+
 	d.requestRateLimiter = limiter.NewRateLimiter(requestRateStrategy, 10*time.Second)
 	d.ingestionRateLimiter = limiter.NewRateLimiter(ingestionRateStrategy, 10*time.Second)
 	d.distributorsLifecycler = distributorsLifecycler
 	d.distributorsRing = distributorsRing
+	d.HATracker = haTrackerImpl
 
 	d.activeUsers = util.NewActiveUsersCleanupWithDefaultValues(d.cleanupInactiveUser)
 	d.activeGroups = activeGroupsCleanupService
@@ -704,40 +738,102 @@ func (d *Distributor) checkSample(ctx context.Context, userID, cluster, replica 
 	return true, nil
 }
 
-// Validates a single series from a write request.
+// validateSamples validates samples of a single timeseries and removes the ones with duplicated timestamps.
+// Returns an error explaining the first validation finding.
 // May alter timeseries data in-place.
 // The returned error may retain the series labels.
-// It uses the passed nowt time to observe the delay of sample timestamps.
-func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeseries, userID, group string, skipLabelValidation, skipLabelCountValidation bool, minExemplarTS, maxExemplarTS int64) error {
-	if err := validateLabels(d.sampleValidationMetrics, d.limits, userID, group, ts.Labels, skipLabelValidation, skipLabelCountValidation); err != nil {
-		return err
+func (d *Distributor) validateSamples(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	if len(ts.Samples) == 0 {
+		return nil
 	}
 
-	now := model.TimeFromUnixNano(nowt.UnixNano())
+	if len(ts.Samples) == 1 {
+		return validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, ts.Samples[0])
+	}
 
+	timestamps := make(map[int64]struct{}, min(len(ts.Samples), 100))
+	currPos := 0
+	duplicatesFound := false
 	for _, s := range ts.Samples {
+		if _, ok := timestamps[s.TimestampMs]; ok {
+			// A sample with the same timestamp has already been validated, so we skip it.
+			duplicatesFound = true
+			continue
+		}
+
+		timestamps[s.TimestampMs] = struct{}{}
 		if err := validateSample(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, s); err != nil {
 			return err
 		}
+
+		ts.Samples[currPos] = s
+		currPos++
 	}
 
+	if duplicatesFound {
+		ts.Samples = ts.Samples[:currPos]
+		ts.SamplesUpdated()
+	}
+
+	return nil
+}
+
+// validateHistograms validates histograms of a single timeseries and removes the ones with duplicated timestamps.
+// Returns an error explaining the first validation finding.
+// May alter timeseries data in-place.
+// The returned error may retain the series labels.
+func (d *Distributor) validateHistograms(now model.Time, ts *mimirpb.PreallocTimeseries, userID, group string) error {
+	if len(ts.Histograms) == 0 {
+		return nil
+	}
+
+	if len(ts.Histograms) == 1 {
+		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[0])
+		if err != nil {
+			return err
+		}
+		if updated {
+			ts.HistogramsUpdated()
+		}
+		return nil
+	}
+
+	timestamps := make(map[int64]struct{}, min(len(ts.Histograms), 100))
+	currPos := 0
 	histogramsUpdated := false
-	for i := range ts.Histograms {
-		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[i])
+	for idx := range ts.Histograms {
+		if _, ok := timestamps[ts.Histograms[idx].Timestamp]; ok {
+			// A sample with the same timestamp has already been validated, so we skip it.
+			histogramsUpdated = true
+			continue
+		}
+
+		timestamps[ts.Histograms[idx].Timestamp] = struct{}{}
+		updated, err := validateSampleHistogram(d.sampleValidationMetrics, now, d.limits, userID, group, ts.Labels, &ts.Histograms[idx])
 		if err != nil {
 			return err
 		}
 		histogramsUpdated = histogramsUpdated || updated
+
+		ts.Histograms[currPos] = ts.Histograms[idx]
+		currPos++
 	}
+
 	if histogramsUpdated {
+		ts.Histograms = ts.Histograms[:currPos]
 		ts.HistogramsUpdated()
 	}
 
+	return nil
+}
+
+// validateExemplars validates exemplars of a single timeseries.
+// May alter timeseries data in-place.
+func (d *Distributor) validateExemplars(ts *mimirpb.PreallocTimeseries, userID string, minExemplarTS, maxExemplarTS int64) {
 	if d.limits.MaxGlobalExemplarsPerUser(userID) == 0 {
 		ts.ClearExemplars()
-		return nil
+		return
 	}
-
 	allowedExemplars := d.limits.MaxExemplarsPerSeriesPerRequest(userID)
 	if allowedExemplars > 0 && len(ts.Exemplars) > allowedExemplars {
 		d.exemplarValidationMetrics.tooManyExemplars.WithLabelValues(userID).Add(float64(len(ts.Exemplars) - allowedExemplars))
@@ -769,7 +865,40 @@ func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeser
 	if !isInOrder {
 		ts.SortExemplars()
 	}
-	return nil
+}
+
+// Validates a single series from a write request.
+// May alter timeseries data in-place.
+// Returns a boolean stating if the timeseries should be removed from the request, and an error explaining the first validation finding.
+// The returned error may retain the series labels.
+// It uses the passed nowt time to observe the delay of sample timestamps.
+func (d *Distributor) validateSeries(nowt time.Time, ts *mimirpb.PreallocTimeseries, userID, group string, skipLabelValidation, skipLabelCountValidation bool, minExemplarTS, maxExemplarTS int64) (bool, error) {
+	if err := validateLabels(d.sampleValidationMetrics, d.limits, userID, group, ts.Labels, skipLabelValidation, skipLabelCountValidation); err != nil {
+		return true, err
+	}
+
+	now := model.TimeFromUnixNano(nowt.UnixNano())
+	totalSamplesAndHistograms := len(ts.Samples) + len(ts.Histograms)
+
+	if err := d.validateSamples(now, ts, userID, group); err != nil {
+		return true, err
+	}
+
+	if err := d.validateHistograms(now, ts, userID, group); err != nil {
+		return true, err
+	}
+
+	d.validateExemplars(ts, userID, minExemplarTS, maxExemplarTS)
+
+	deduplicatedSamplesAndHistograms := totalSamplesAndHistograms - len(ts.Samples) - len(ts.Histograms)
+
+	if deduplicatedSamplesAndHistograms > 0 {
+		d.sampleValidationMetrics.duplicateTimestamp.WithLabelValues(userID, group).Add(float64(deduplicatedSamplesAndHistograms))
+		unsafeMetricName, _ := extract.UnsafeMetricNameFromLabelAdapters(ts.Labels)
+		return false, fmt.Errorf(duplicateTimestampMsgFormat, deduplicatedSamplesAndHistograms, unsafeMetricName)
+	}
+
+	return false, nil
 }
 func (d *Distributor) labelValuesWithNewlines(labels []mimirpb.LabelAdapter) int {
 	count := 0
@@ -801,7 +930,9 @@ func (d *Distributor) wrapPushWithMiddlewares(next PushFunc) PushFunc {
 		next = middlewares[ix](next)
 	}
 
-	return next
+	// The delay middleware must take into account total runtime of all other middlewares and the push func, hence why we wrap all others.
+	return d.outerMaybeDelayMiddleware(next)
+
 }
 
 func (d *Distributor) prePushHaDedupeMiddleware(next PushFunc) PushFunc {
@@ -1002,12 +1133,12 @@ func (d *Distributor) prePushValidationMiddleware(next PushFunc) PushFunc {
 		earliestSampleTimestampMs, latestSampleTimestampMs := int64(math.MaxInt64), int64(0)
 		for _, ts := range req.Timeseries {
 			for _, s := range ts.Samples {
-				earliestSampleTimestampMs = util_math.Min(earliestSampleTimestampMs, s.TimestampMs)
-				latestSampleTimestampMs = util_math.Max(latestSampleTimestampMs, s.TimestampMs)
+				earliestSampleTimestampMs = min(earliestSampleTimestampMs, s.TimestampMs)
+				latestSampleTimestampMs = max(latestSampleTimestampMs, s.TimestampMs)
 			}
 			for _, h := range ts.Histograms {
-				earliestSampleTimestampMs = util_math.Min(earliestSampleTimestampMs, h.Timestamp)
-				latestSampleTimestampMs = util_math.Max(latestSampleTimestampMs, h.Timestamp)
+				earliestSampleTimestampMs = min(earliestSampleTimestampMs, h.Timestamp)
+				latestSampleTimestampMs = max(latestSampleTimestampMs, h.Timestamp)
 			}
 		}
 		// Update this metric even in case of errors.
@@ -1049,7 +1180,7 @@ func (d *Distributor) prePushValidationMiddleware(next PushFunc) PushFunc {
 			skipLabelCountValidation := d.cfg.SkipLabelCountValidation || req.GetSkipLabelCountValidation()
 
 			// Note that validateSeries may drop some data in ts.
-			validationErr := d.validateSeries(now, &req.Timeseries[tsIdx], userID, group, skipLabelValidation, skipLabelCountValidation, minExemplarTS, maxExemplarTS)
+			shouldRemove, validationErr := d.validateSeries(now, &req.Timeseries[tsIdx], userID, group, skipLabelValidation, skipLabelCountValidation, minExemplarTS, maxExemplarTS)
 
 			// Errors in validation are considered non-fatal, as one series in a request may contain
 			// invalid data but all the remaining series could be perfectly valid.
@@ -1058,7 +1189,9 @@ func (d *Distributor) prePushValidationMiddleware(next PushFunc) PushFunc {
 					// The series are never retained by validationErr. This is guaranteed by the way the latter is built.
 					firstPartialErr = newValidationError(validationErr)
 				}
-				removeIndexes = append(removeIndexes, tsIdx)
+				if shouldRemove {
+					removeIndexes = append(removeIndexes, tsIdx)
+				}
 				continue
 			}
 
@@ -1165,6 +1298,28 @@ func (d *Distributor) metricsMiddleware(next PushFunc) PushFunc {
 		d.incomingMetadata.WithLabelValues(userID).Add(float64(len(req.Metadata)))
 
 		return next(ctx, pushReq)
+	}
+}
+
+// outerMaybeDelayMiddleware is a middleware that may delay ingestion if configured.
+func (d *Distributor) outerMaybeDelayMiddleware(next PushFunc) PushFunc {
+	return func(ctx context.Context, pushReq *Request) error {
+		start := d.now()
+		// Execute the whole middleware chain.
+		err := next(ctx, pushReq)
+
+		userID, userErr := tenant.TenantID(ctx) // Log tenant ID if available.
+		if userErr == nil {
+			// Target delay - time spent processing the middleware chain including the push.
+			// If the request took longer than the target delay, we don't delay at all as sleep will return immediately for a negative value.
+			if delay := d.limits.DistributorIngestionArtificialDelay(userID) - d.now().Sub(start); delay > 0 {
+				d.sleep(util.DurationWithJitter(delay, 0.10))
+			}
+			return err
+		}
+
+		level.Warn(d.log).Log("msg", "failed to get tenant ID while trying to delay ingestion", "err", userErr)
+		return err
 	}
 }
 
@@ -1379,7 +1534,6 @@ func NextOrCleanup(next PushFunc, pushReq *Request) (_ PushFunc, maybeCleanup fu
 func (d *Distributor) Push(ctx context.Context, req *mimirpb.WriteRequest) (*mimirpb.WriteResponse, error) {
 	pushReq := NewParsedRequest(req)
 	pushReq.AddCleanup(func() {
-		req.FreeBuffer()
 		mimirpb.ReuseSlice(req.Timeseries)
 	})
 
@@ -2558,7 +2712,7 @@ func (d *Distributor) MetricsForLabelMatchers(ctx context.Context, from, through
 
 	result := make([]labels.Labels, 0, len(metrics))
 	for _, m := range metrics {
-		if err := queryLimiter.AddSeries(mimirpb.FromLabelsToLabelAdapters(m)); err != nil {
+		if err := queryLimiter.AddSeries(m); err != nil {
 			return nil, err
 		}
 		result = append(result, m)

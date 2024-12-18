@@ -8,29 +8,40 @@ package distributor
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/gogo/protobuf/proto"
+	"github.com/grafana/dskit/grpcutil"
+	"github.com/grafana/dskit/httpgrpc"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	grpcstatus "google.golang.org/grpc/status"
+	golangproto "google.golang.org/protobuf/proto"
 
 	"github.com/grafana/mimir/pkg/mimirpb"
 	"github.com/grafana/mimir/pkg/util/validation"
 )
 
 type validateLabelsCfg struct {
-	maxLabelNamesPerSeries int
-	maxLabelNameLength     int
-	maxLabelValueLength    int
+	maxLabelNamesPerSeries     int
+	maxLabelNamesPerInfoSeries int
+	maxLabelNameLength         int
+	maxLabelValueLength        int
 }
 
 func (v validateLabelsCfg) MaxLabelNamesPerSeries(_ string) int {
 	return v.maxLabelNamesPerSeries
+}
+
+func (v validateLabelsCfg) MaxLabelNamesPerInfoSeries(_ string) int {
+	return v.maxLabelNamesPerInfoSeries
 }
 
 func (v validateLabelsCfg) MaxLabelNameLength(_ string) int {
@@ -64,6 +75,7 @@ func TestValidateLabels(t *testing.T) {
 	cfg.maxLabelValueLength = 25
 	cfg.maxLabelNameLength = 25
 	cfg.maxLabelNamesPerSeries = 2
+	cfg.maxLabelNamesPerInfoSeries = 3
 
 	for _, c := range []struct {
 		metric                   model.Metric
@@ -158,6 +170,31 @@ func TestValidateLabels(t *testing.T) {
 			),
 		},
 		{
+			// *_info metrics have higher label limits.
+			metric:                   map[model.LabelName]model.LabelValue{model.MetricNameLabel: "foo_info", "bar": "baz", "blip": "blop"},
+			skipLabelNameValidation:  false,
+			skipLabelCountValidation: false,
+			err:                      nil,
+		},
+		{
+			// *_info metrics have higher label limits.
+			metric:                   map[model.LabelName]model.LabelValue{model.MetricNameLabel: "foo_info", "bar": "baz", "blip": "blop", "blap": "blup"},
+			skipLabelNameValidation:  false,
+			skipLabelCountValidation: false,
+			err: fmt.Errorf(
+				tooManyInfoLabelsMsgFormat,
+				tooManyLabelsArgs(
+					[]mimirpb.LabelAdapter{
+						{Name: model.MetricNameLabel, Value: "foo_info"},
+						{Name: "bar", Value: "baz"},
+						{Name: "blip", Value: "blop"},
+						{Name: "blap", Value: "blup"},
+					},
+					3,
+				)...,
+			),
+		},
+		{
 			metric:                   map[model.LabelName]model.LabelValue{model.MetricNameLabel: "foo", "bar": "baz", "blip": "blop"},
 			skipLabelNameValidation:  false,
 			skipLabelCountValidation: true,
@@ -181,13 +218,7 @@ func TestValidateLabels(t *testing.T) {
 			skipLabelCountValidation: false,
 			err: fmt.Errorf(
 				invalidLabelValueMsgFormat,
-				"label1", "abc\xfe\xfddef",
-				mimirpb.FromLabelAdaptersToString(
-					[]mimirpb.LabelAdapter{
-						{Name: model.MetricNameLabel, Value: "foo"},
-						{Name: "label1", Value: "abc\xfe\xfddef"},
-					},
-				),
+				"label1", "abc\ufffddef", "foo",
 			),
 		},
 		{
@@ -212,6 +243,7 @@ func TestValidateLabels(t *testing.T) {
 			cortex_discarded_samples_total{group="custom label",reason="label_value_invalid",user="testUser"} 1
 			cortex_discarded_samples_total{group="custom label",reason="label_value_too_long",user="testUser"} 1
 			cortex_discarded_samples_total{group="custom label",reason="max_label_names_per_series",user="testUser"} 1
+			cortex_discarded_samples_total{group="custom label",reason="max_label_names_per_info_series",user="testUser"} 1
 			cortex_discarded_samples_total{group="custom label",reason="metric_name_invalid",user="testUser"} 2
 			cortex_discarded_samples_total{group="custom label",reason="missing_metric_name",user="testUser"} 1
 			cortex_discarded_samples_total{group="custom label",reason="random reason",user="different user"} 1
@@ -644,4 +676,62 @@ func tooManyLabelsArgs(series []mimirpb.LabelAdapter, limit int) []any {
 	}
 
 	return []any{len(series), limit, metric, ellipsis}
+}
+
+func TestValidUTF8Message(t *testing.T) {
+	testCases := map[string]struct {
+		body                      []byte
+		containsNonUTF8Characters bool
+	}{
+		"valid message returns no error": {
+			body:                      []byte("valid message"),
+			containsNonUTF8Characters: false,
+		},
+		"message containing only UTF8 characters returns no error": {
+			body:                      []byte("\n\ufffd\u0016\n\ufffd\u0002\n\u001D\n\u0011container.runtime\u0012\b\n\u0006docker\n'\n\u0012container.h"),
+			containsNonUTF8Characters: false,
+		},
+		"message containing non-UTF8 character returns an error": {
+			// \xf6 and \xd3 are not valid UTF8 characters.
+			body:                      []byte("\n\xf6\x1a\n\xd3\x02\n\x1d\n\x11container.runtime\x12\x08\n\x06docker\n'\n\x12container.h"),
+			containsNonUTF8Characters: true,
+		},
+	}
+
+	for name, tc := range testCases {
+		for _, withValidation := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s withValidation: %v", name, withValidation), func(t *testing.T) {
+				msg := string(tc.body)
+				if withValidation {
+					msg = validUTF8Message(msg)
+				}
+				httpgrpcErr := httpgrpc.Error(http.StatusBadRequest, msg)
+
+				// gogo's proto.Marshal() correctly processes both httpgrpc errors with and without non-utf8 characters.
+				st, ok := grpcutil.ErrorToStatus(httpgrpcErr)
+				require.True(t, ok)
+				stBytes, err := proto.Marshal(st.Proto())
+				require.NoError(t, err)
+				require.NotNil(t, stBytes)
+
+				//lint:ignore faillint We want to explicitly use on grpcstatus.FromError()
+				grpcSt, ok := grpcstatus.FromError(httpgrpcErr)
+				require.True(t, ok)
+				stBytes, err = golangproto.Marshal(grpcSt.Proto())
+				if withValidation {
+					// Ensure that errors with validated messages can always be correctly marshaled.
+					require.NoError(t, err)
+					require.NotNil(t, stBytes)
+				} else {
+					if tc.containsNonUTF8Characters {
+						// Ensure that errors with non-validated non-utf8 messages cannot be correctly marshaled.
+						require.Error(t, err)
+					} else {
+						require.NoError(t, err)
+						require.NotNil(t, stBytes)
+					}
+				}
+			})
+		}
+	}
 }

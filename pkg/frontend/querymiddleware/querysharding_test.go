@@ -24,6 +24,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/value"
@@ -125,7 +126,11 @@ func compareExpectedAndActual(t *testing.T, expectedTs, actualTs int64, expected
 		}
 		// InEpsilon means the relative error (see https://en.wikipedia.org/wiki/Relative_error#Example) must be less than epsilon (here 1e-12).
 		// The relative error is calculated using: abs(actual-expected) / abs(expected)
-		require.InEpsilonf(t, expectedVal, actualVal, tolerance, "%s value at position %d with timestamp %d for series %s", sampleType, j, expectedTs, labels)
+		if math.IsInf(expectedVal, +1) || math.IsInf(expectedVal, -1) {
+			require.Equal(t, expectedVal, actualVal)
+		} else {
+			require.InEpsilonf(t, expectedVal, actualVal, tolerance, "%s value at position %d with timestamp %d for series %s", sampleType, j, expectedTs, labels)
+		}
 	}
 }
 
@@ -304,7 +309,7 @@ func TestQuerySharding_Correctness(t *testing.T) {
 			query: `
 				sum by(unique) (metric_counter)
 				*
-				on (unique) group_left (group_1) 
+				on (unique) group_left (group_1)
 				avg by (unique, group_1) (metric_counter)`,
 			expectedShardedQueries: 3,
 		},
@@ -983,15 +988,8 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 
 	testsForBoth := []queryShardingFunctionCorrectnessTest{
 		{fn: "count_over_time", rangeQuery: true},
-		{fn: "days_in_month"},
-		{fn: "day_of_month"},
-		{fn: "day_of_week"},
-		{fn: "day_of_year"},
 		{fn: "delta", rangeQuery: true},
-		{fn: "hour"},
 		{fn: "increase", rangeQuery: true},
-		{fn: "minute"},
-		{fn: "month"},
 		{fn: "rate", rangeQuery: true},
 		{fn: "resets", rangeQuery: true},
 		{fn: "sort"},
@@ -1001,11 +999,6 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 		{fn: "last_over_time", rangeQuery: true},
 		{fn: "present_over_time", rangeQuery: true},
 		{fn: "timestamp"},
-		{fn: "year"},
-		{fn: "clamp", args: []string{"5", "10"}},
-		{fn: "clamp_max", args: []string{"5"}},
-		{fn: "clamp_min", args: []string{"5"}},
-		{fn: "round", args: []string{"20"}},
 		{fn: "label_replace", args: []string{`"fuzz"`, `"$1"`, `"foo"`, `"b(.*)"`}},
 		{fn: "label_join", args: []string{`"fuzz"`, `","`, `"foo"`, `"bar"`}},
 	}
@@ -1013,10 +1006,18 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 		{fn: "abs"},
 		{fn: "avg_over_time", rangeQuery: true},
 		{fn: "ceil"},
+		{fn: "clamp", args: []string{"5", "10"}},
+		{fn: "clamp_max", args: []string{"5"}},
+		{fn: "clamp_min", args: []string{"5"}},
 		{fn: "changes", rangeQuery: true},
+		{fn: "days_in_month"},
+		{fn: "day_of_month"},
+		{fn: "day_of_week"},
+		{fn: "day_of_year"},
 		{fn: "deriv", rangeQuery: true},
 		{fn: "exp"},
 		{fn: "floor"},
+		{fn: "hour"},
 		{fn: "idelta", rangeQuery: true},
 		{fn: "irate", rangeQuery: true},
 		{fn: "ln"},
@@ -1024,6 +1025,9 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 		{fn: "log2"},
 		{fn: "max_over_time", rangeQuery: true},
 		{fn: "min_over_time", rangeQuery: true},
+		{fn: "minute"},
+		{fn: "month"},
+		{fn: "round", args: []string{"20"}},
 		{fn: "sqrt"},
 		{fn: "deg"},
 		{fn: "asinh"},
@@ -1047,7 +1051,10 @@ func TestQuerySharding_FunctionCorrectness(t *testing.T) {
 		{fn: "mad_over_time", rangeQuery: true, tpl: `(<fn>(bar1{}))`},
 		{fn: "sgn"},
 		{fn: "predict_linear", args: []string{"1"}, rangeQuery: true},
+		{fn: "double_exponential_smoothing", args: []string{"0.5", "0.7"}, rangeQuery: true},
+		// holt_winters is a backwards compatible alias for double_exponential_smoothing.
 		{fn: "holt_winters", args: []string{"0.5", "0.7"}, rangeQuery: true},
+		{fn: "year"},
 	}
 	testsForNativeHistogramsOnly := []queryShardingFunctionCorrectnessTest{
 		{fn: "histogram_count"},
@@ -1510,7 +1517,7 @@ func TestQuerySharding_ShouldReturnErrorInCorrectFormat(t *testing.T) {
 	var (
 		engine        = newEngine()
 		engineTimeout = promql.NewEngine(promql.EngineOpts{
-			Logger:               log.NewNopLogger(),
+			Logger:               promslog.NewNopLogger(),
 			Reg:                  nil,
 			MaxSamples:           10e6,
 			Timeout:              50 * time.Millisecond,
@@ -1523,7 +1530,7 @@ func TestQuerySharding_ShouldReturnErrorInCorrectFormat(t *testing.T) {
 			},
 		})
 		engineSampleLimit = promql.NewEngine(promql.EngineOpts{
-			Logger:               log.NewNopLogger(),
+			Logger:               promslog.NewNopLogger(),
 			Reg:                  nil,
 			MaxSamples:           1,
 			Timeout:              time.Hour,
@@ -1937,7 +1944,7 @@ func BenchmarkQuerySharding(b *testing.B) {
 			time.Millisecond / 10,
 		} {
 			engine := promql.NewEngine(promql.EngineOpts{
-				Logger:               log.NewNopLogger(),
+				Logger:               promslog.NewNopLogger(),
 				Reg:                  nil,
 				MaxSamples:           100000000,
 				Timeout:              time.Minute,
@@ -2505,7 +2512,7 @@ func (i *seriesIteratorMock) Warnings() annotations.Annotations {
 // newEngine creates and return a new promql.Engine used for testing.
 func newEngine() *promql.Engine {
 	return promql.NewEngine(promql.EngineOpts{
-		Logger:               log.NewNopLogger(),
+		Logger:               promslog.NewNopLogger(),
 		Reg:                  nil,
 		MaxSamples:           10e6,
 		Timeout:              1 * time.Hour,

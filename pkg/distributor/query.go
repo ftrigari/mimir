@@ -10,6 +10,7 @@ package distributor
 import (
 	"context"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/go-kit/log/level"
@@ -21,7 +22,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
-	"golang.org/x/exp/slices"
 
 	ingester_client "github.com/grafana/mimir/pkg/ingester/client"
 	"github.com/grafana/mimir/pkg/mimirpb"
@@ -268,7 +268,7 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSets [
 
 			if len(resp.Timeseries) > 0 {
 				for _, series := range resp.Timeseries {
-					if limitErr := queryLimiter.AddSeries(series.Labels); limitErr != nil {
+					if limitErr := queryLimiter.AddSeries(mimirpb.FromLabelAdaptersToLabels(series.Labels)); limitErr != nil {
 						return ingesterQueryResult{}, limitErr
 					}
 				}
@@ -285,7 +285,7 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSets [
 				}
 
 				for _, series := range resp.Chunkseries {
-					if err := queryLimiter.AddSeries(series.Labels); err != nil {
+					if err := queryLimiter.AddSeries(mimirpb.FromLabelAdaptersToLabels(series.Labels)); err != nil {
 						return ingesterQueryResult{}, err
 					}
 				}
@@ -300,7 +300,9 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSets [
 				streamingSeriesCount += len(resp.StreamingSeries)
 
 				for _, s := range resp.StreamingSeries {
-					if err := queryLimiter.AddSeries(s.Labels); err != nil {
+					l := mimirpb.FromLabelAdaptersToLabels(s.Labels)
+
+					if err := queryLimiter.AddSeries(l); err != nil {
 						return ingesterQueryResult{}, err
 					}
 
@@ -313,7 +315,7 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSets [
 						return ingesterQueryResult{}, err
 					}
 
-					labelsBatch = append(labelsBatch, mimirpb.FromLabelAdaptersToLabels(s.Labels))
+					labelsBatch = append(labelsBatch, l)
 				}
 
 				streamingSeriesBatches = append(streamingSeriesBatches, labelsBatch)

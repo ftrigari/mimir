@@ -724,6 +724,9 @@ How to **fix** it:
   -compactor.cleanup-interval=5m
   ```
 
+> [!NOTE]
+> These mitigations may be especially helpful if you are concurrently seeing queries for this tenant fail consistency checks.
+
 ### MimirInconsistentRuntimeConfig
 
 This alert fires if multiple replicas of the same Mimir service are using a different runtime config for a longer period of time.
@@ -1200,6 +1203,7 @@ How to **investigate**:
   # Assuming Prometheus is running in namespace "default":
   kubectl --namespace default get pod --selector='name=prometheus'
   ```
+- If Prometheus looks healthy, check that it has enough CPU allocated
 
 For scaled objects with 0 `minReplicas` it is expected for HPA to be inactive when the scaling metric exposed in `keda_scaler_metrics_value` is 0.
 When `keda_scaler_metrics_value` value is 0 or missing, the alert should not be firing.
@@ -1229,6 +1233,7 @@ How to **investigate**:
   # Assuming Prometheus is running in namespace "default":
   kubectl --namespace default get pod --selector='name=prometheus'
   ```
+- If Prometheus looks healthy, check that it has enough CPU allocated
 
 ### MimirContinuousTestNotRunningOnWrites
 
@@ -1393,17 +1398,40 @@ How to **investigate** and **fix** it:
 - Check if disk utilization unbalance is caused by shuffle sharding
 
   - Investigate which tenants use most of the store-gateway disk in the replicas with highest disk utilization. To investigate it you can run the following command for a given store-gateway replica. The command returns the top 10 tenants by disk utilization (in megabytes):
+
     ```
-    kubectl --context $CLUSTER --namespace $CELL exec -ti $POD -- sh -c 'du -sm /data/tsdb/* | sort -n -r | head -10'
+    # If you're running the alpine image:
+    kubectl --context $CLUSTER --namespace $NAMESPACE exec -ti $POD -- sh -c 'du -sm /data/tsdb/* | sort -n -r | head -10'
+
+    # If you're running the distroless image:
+    kubectl --context $CLUSTER --namespace $NAMESPACE debug pod/$POD --image=alpine:latest --target=store-gateway --container=debug -ti -- sh -c 'du -sm /proc/1/root/data/tsdb/* | sort -n -r | head -10'
     ```
+
   - Check the configured `-store-gateway.tenant-shard-size` (`store_gateway_tenant_shard_size`) of each tenant that mostly contributes to disk utilization. Consider increase the tenant's the shard size if it's smaller than the number of available store-gateway replicas (a value of `0` disables shuffle sharding for the tenant, effectively sharding their blocks across all replicas).
 
 - Check if disk utilization unbalance is caused by a tenant with uneven block sizes
+
   - Even if a tenant has no shuffle sharding and their blocks are sharded across all replicas, it may still cause unbalance in store-gateway disk utilization if the size of their blocks dramatically changed over time (e.g. because the number of series per block significantly changed over time). As a proxy metric, the number of series per block is roughly the total number of series across all blocks for the largest `-compactor.block-ranges` (default is 24h) divided by the number of `-compactor.split-and-merge-shards` (`compactor_split_and_merge_shards`).
   - If you suspect this may be an issue:
     - Check the number of series in each block in the store-gateway blocks list for the affected tenant, through the web page exposed by the store-gateway at `/store-gateway/tenant/<tenant ID>/blocks`
     - Check the number of in-memory series shown on the `Mimir / Tenants` dashboard for an approximation of the number of series that will be compacted once these blocks are shipped from ingesters.
     - Check the configured `compactor_split_and_merge_shards` for the tenant. A reasonable rule of thumb is 8-10 million series per compactor shard - if the number of series per shard is above this range, increase `compactor_split_and_merge_shards` for the affected tenant(s) accordingly.
+
+- Check if the persistent volume is nearing its limit and determine if it needs to be increased.
+
+  - If persistent volume resizing is required for store-gateways and automatic downscaling is enabled, you must disable it before proceeding with the resizing process. This step is necessary to prevent any unexpected downscaling by the rollout operator while updating the stateful set for each zone. To disable automatic downscaling for store-gateways,
+    set `$._config.store_gateway_automated_downscale_enabled = false`.
+
+  ```jsonnet
+  {
+    _config+:
+    {
+      store_gateway_automated_downscale_enabled: false
+    }
+  }
+  ```
+
+  - After the resizing process finishes, revert this change.
 
 ## Mimir ingest storage (experimental)
 
@@ -1523,6 +1551,25 @@ How to **investigate**:
   - If the call exists and it's waiting on a lock then there may be a deadlock.
   - If the call doesn't exist then it could either mean processing is not stuck (false positive) or the `pushToStorage` wasn't called at all, and so you should investigate the callers in the code.
 
+### MimirIngesterMissedRecordsFromKafka
+
+This alert fires when an ingester has missed processing some records from Kafka. In other words, there has been a gap in offsets.
+
+How it **works**:
+
+- The ingester reads records from Kafka and processes them sequentially. It keeps track of the offset of the last record it's processed.
+- Upon fetching the next batch of records, it checks if the first available record has an offset of one greater than the last processed offset. If the first available offset is larger than that, then the ingester has missed some records.
+- Kafka doesn't guarantee sequential offsets. If a record has been manually deleted from Kafka or if the records have been produced in a transaction and the transaction was aborted, then there may be a gap.
+- Mimir doesn't produce in transactions and does not delete records.
+- When the ingester starts, it attempts to resume from the last offset it processed. If the ingester has been unavailable for long enough that the next record is already removed due to retention, then the ingester misses some records.
+
+How to **investigate**:
+
+- Find the offsets which were missed. The ingester logs them along with the message `there is a gap in consumed offsets`.
+- Verify that there have been no deleted records in your Kafka cluster.
+- Verify that the ingester hasn't been down for longer than the retention on the Kafka partition.
+- Report a bug.
+
 ### MimirStrongConsistencyEnforcementFailed
 
 This alert fires when too many read requests with strong consistency are failing.
@@ -1611,6 +1658,47 @@ How to **fix**:
 
   1. Once ingesters are stable, revert the temporarily config applied in the previous step.
 
+### MimirBlockBuilderNoCycleProcessing
+
+This alert fires when the block-builder stops reporting any processed cycles for an unexpectedly long time.
+
+How it **works**:
+
+- The block-builder periodically consumes a portion of the backlog from Kafka partition, and processes the consumed data into TSDB blocks. The block-builder calls these periods "cycles".
+- If the block-builder doesn't process any cycles for an extended period of time, this could indicate that a block-builder instance is stuck and cannot complete cycle processing.
+
+How to **investigate**:
+
+- Check the block-builder logs to see what its pods have been busy with. The block-builder logs the `start consuming` and `done consuming` log messages, that mark per-partition conume-cycles. These log records include the details about the cycle, the Kafka topic's offsets, etc. Troubleshoot based on that.
+
+### MimirBlockBuilderLagging
+
+This alert fires when the block-builder instances report a large number of unprocessed records in the Kafka partitions.
+
+How it **works**:
+
+- When the block-builder starts a new consume cycle, it checks how many records the Kafka partition has in the backlog. This number is tracked in the `cortex_blockbuilder_consumer_lag_records` metric.
+- The block-builder must consume and process these records into TSDB blocks.
+- At the end of the processing, the block-builder commits the offset of the last fully processed record into Kafka.
+- If the block-builder reports high values in the lag, this could indicate that a block-builder instance cannot fully process and commit Kafka record.
+
+How to **investigate**:
+
+- Check if the per-partition lag, reported by the `cortex_blockbuilder_consumer_lag_records` metric, has been growing over the past hours.
+- Explore the block-builder logs for any errors reported while it processed the partition.
+
+### MimirBlockBuilderCompactAndUploadFailed
+
+How it **works**:
+
+- The block-builder periodically consumes data from a Kafka topic and processes the consumed data into TSDB blocks.
+- It compacts and uploads the produced TSDB blocks to object storage.
+- If the block-builder encounters issues while compacting or uploading the blocks, it reports the failure metric, which then triggers the alert.
+
+How to **investigate**:
+
+- Explore the block-builder logs to check what errors are there.
+
 ## Errors catalog
 
 Mimir has some codified error IDs that you might see in HTTP responses or logs.
@@ -1641,6 +1729,16 @@ The limit protects the system’s stability from potential abuse or mistakes. To
 
 {{< admonition type="note" >}}
 Invalid series are skipped during the ingestion, and valid series within the same request are ingested.
+{{< /admonition >}}
+
+### err-mimir-max-label-names-per-info-series
+
+This non-critical error occurs when Mimir receives a write request that contains an info series with a number of labels that exceeds the configured limit.
+An info series is a series where the metric name ends in `_info`.
+The limit protects the system’s stability from potential abuse or mistakes. To configure the limit on a per-tenant basis, use the `-validation.max-label-names-per-info-series` option.
+
+{{< admonition type="note" >}}
+Invalid series are skipped during ingestion, and valid series in the same request are ingested.
 {{< /admonition >}}
 
 ### err-mimir-max-native-histogram-buckets

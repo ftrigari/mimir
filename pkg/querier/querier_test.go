@@ -16,12 +16,15 @@ import (
 	"github.com/grafana/dskit/user"
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/common/promslog"
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/scrape"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/util/almost"
 	"github.com/prometheus/prometheus/util/annotations"
 	promtestutil "github.com/prometheus/prometheus/util/testutil"
 	v1 "github.com/prometheus/prometheus/web/api/v1"
@@ -35,6 +38,7 @@ import (
 	"github.com/grafana/mimir/pkg/querier/stats"
 	"github.com/grafana/mimir/pkg/storage/chunk"
 	"github.com/grafana/mimir/pkg/util"
+	util_log "github.com/grafana/mimir/pkg/util/log"
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"github.com/grafana/mimir/pkg/util/test"
 	"github.com/grafana/mimir/pkg/util/validation"
@@ -49,6 +53,7 @@ const (
 	chunkLength     = 3 * time.Hour
 	sampleRate      = 15 * time.Second
 	samplesPerChunk = chunkLength / sampleRate
+	epsilon         = 0.000001 // Relative error allowed for sample values.
 )
 
 type query struct {
@@ -81,10 +86,8 @@ func TestQuerier(t *testing.T) {
 			},
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloat },
 			assertFPoint: func(t testing.TB, ts int64, point promql.FPoint) {
-				require.Equal(t, promql.FPoint{
-					T: ts + int64((sampleRate*4)/time.Millisecond),
-					F: 1000.0,
-				}, point)
+				require.Equal(t, ts+int64((sampleRate*4)/time.Millisecond), point.T)
+				require.True(t, almost.Equal(1000.0, point.F, epsilon))
 			},
 		},
 
@@ -99,10 +102,8 @@ func TestQuerier(t *testing.T) {
 			},
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloat },
 			assertFPoint: func(t testing.TB, ts int64, point promql.FPoint) {
-				require.Equal(t, promql.FPoint{
-					T: ts,
-					F: float64(ts),
-				}, point)
+				require.Equal(t, ts, point.T)
+				require.True(t, almost.Equal(float64(ts), point.F, epsilon))
 			},
 		},
 
@@ -116,10 +117,8 @@ func TestQuerier(t *testing.T) {
 			},
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloat },
 			assertFPoint: func(t testing.TB, ts int64, point promql.FPoint) {
-				require.Equal(t, promql.FPoint{
-					T: ts + int64((sampleRate*4)/time.Millisecond)*10,
-					F: 1000.0,
-				}, point)
+				require.Equal(t, ts+int64((sampleRate*4)/time.Millisecond)*10, point.T)
+				require.True(t, almost.Equal(1000.0, point.F, epsilon))
 			},
 		},
 
@@ -133,10 +132,8 @@ func TestQuerier(t *testing.T) {
 			},
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloat },
 			assertFPoint: func(t testing.TB, ts int64, point promql.FPoint) {
-				require.Equal(t, promql.FPoint{
-					T: ts,
-					F: float64(ts),
-				}, point)
+				require.Equal(t, ts, point.T)
+				require.True(t, almost.Equal(float64(ts), point.F, epsilon))
 			},
 		},
 
@@ -150,6 +147,11 @@ func TestQuerier(t *testing.T) {
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloatHistogram },
 			assertHPoint: func(t testing.TB, ts int64, point promql.HPoint) {
 				require.Equal(t, ts, point.T)
+				// The TSDB head uses heuristic to determine the chunk sizes, which
+				// can alter where chunks are started, which can alter where
+				// unknown and no reset hints are. We really don't care as the
+				// data doesn't have resets and is not a product of a merge.
+				point.H.CounterResetHint = histogram.UnknownCounterReset
 				test.RequireFloatHistogramEqual(t, test.GenerateTestHistogram(int(ts)).ToFloat(nil), point.H)
 			},
 		},
@@ -164,6 +166,11 @@ func TestQuerier(t *testing.T) {
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloatHistogram },
 			assertHPoint: func(t testing.TB, ts int64, point promql.HPoint) {
 				require.Equal(t, ts, point.T)
+				// The TSDB head uses heuristic to determine the chunk sizes, which
+				// can alter where chunks are started, which can alter where
+				// unknown and no reset hints are. We really don't care as the
+				// data doesn't have resets and is not a product of a merge.
+				point.H.CounterResetHint = histogram.UnknownCounterReset
 				test.RequireFloatHistogramEqual(t, test.GenerateTestFloatHistogram(int(ts)), point.H)
 			},
 		},
@@ -178,6 +185,11 @@ func TestQuerier(t *testing.T) {
 			valueType: func(_ model.Time) chunkenc.ValueType { return chunkenc.ValFloatHistogram },
 			assertHPoint: func(t testing.TB, ts int64, point promql.HPoint) {
 				require.Equal(t, ts, point.T)
+				// The TSDB head uses heuristic to determine the chunk sizes, which
+				// can alter where chunks are started, which can alter where
+				// unknown and no reset hints are. We really don't care as the
+				// data doesn't have resets and is not a product of a merge.
+				point.H.CounterResetHint = histogram.UnknownCounterReset
 				test.RequireFloatHistogramEqual(t, test.GenerateTestFloatHistogram(int(ts)), point.H)
 			},
 		},
@@ -197,26 +209,29 @@ func TestQuerier(t *testing.T) {
 			},
 			assertFPoint: func(t testing.TB, ts int64, point promql.FPoint) {
 				require.True(t, ts <= int64(secondChunkStart))
-				require.Equal(t, promql.FPoint{
-					T: ts,
-					F: float64(ts),
-				}, point)
+				require.Equal(t, ts, point.T)
+				require.True(t, almost.Equal(float64(ts), point.F, epsilon))
 			},
 			assertHPoint: func(t testing.TB, ts int64, point promql.HPoint) {
 				require.True(t, ts > int64(secondChunkStart))
 				require.Equal(t, ts, point.T)
+				// The TSDB head uses heuristic to determine the chunk sizes, which
+				// can alter where chunks are started, which can alter where
+				// unknown and no reset hints are. We really don't care as the
+				// data doesn't have resets and is not a product of a merge.
+				point.H.CounterResetHint = histogram.UnknownCounterReset
 				test.RequireFloatHistogramEqual(t, test.GenerateTestFloatHistogram(int(ts)), point.H)
 			},
 		},
 	}
 
-	for _, q := range queries {
-		t.Run(q.query, func(t *testing.T) {
+	for qName, q := range queries {
+		t.Run(qName, func(t *testing.T) {
 			// Generate TSDB head used to simulate querying the long-term storage.
 			db, through := mockTSDB(t, model.Time(0), int(chunks*samplesPerChunk), sampleRate, chunkOffset, int(samplesPerChunk), q.valueType)
 			dbQueryable := TimeRangeQueryable{
 				Queryable: db,
-				IsApplicable: func(_ string, _ time.Time, _, _ int64) bool {
+				IsApplicable: func(_ string, _ time.Time, _, _ int64, _ ...*labels.Matcher) bool {
 					return true
 				},
 			}
@@ -262,7 +277,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 						mimirpb.Sample{TimestampMs: queryStart.Add(-9*time.Minute).Unix() * 1000, Value: 1},
 						mimirpb.Sample{TimestampMs: queryStart.Add(-8*time.Minute).Unix() * 1000, Value: 1},
 						mimirpb.Sample{TimestampMs: queryStart.Add(-7*time.Minute).Unix() * 1000, Value: 1},
-					}),
+					}, false),
 				},
 				// Series with data points before and after queryStart, but before queryEnd.
 				{
@@ -280,7 +295,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 						mimirpb.Sample{TimestampMs: queryStart.Add(+0*time.Minute).Unix() * 1000, Value: 29},
 						mimirpb.Sample{TimestampMs: queryStart.Add(+1*time.Minute).Unix() * 1000, Value: 31},
 						mimirpb.Sample{TimestampMs: queryStart.Add(+2*time.Minute).Unix() * 1000, Value: 37},
-					}),
+					}, false),
 				},
 				// Series with data points after queryEnd.
 				{
@@ -290,7 +305,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 						mimirpb.Sample{TimestampMs: queryStart.Add(+5*time.Minute).Unix() * 1000, Value: 43},
 						mimirpb.Sample{TimestampMs: queryStart.Add(+6*time.Minute).Unix() * 1000, Value: 47},
 						mimirpb.Sample{TimestampMs: queryStart.Add(+7*time.Minute).Unix() * 1000, Value: 53},
-					}),
+					}, false),
 				},
 			},
 		},
@@ -302,7 +317,7 @@ func TestQuerier_QueryableReturnsChunksOutsideQueriedRange(t *testing.T) {
 	require.NoError(t, err)
 
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:     logger,
+		Logger:     util_log.SlogFromGoKit(logger),
 		MaxSamples: 1e6,
 		Timeout:    1 * time.Minute,
 	})
@@ -359,8 +374,8 @@ func TestBatchMergeChunks(t *testing.T) {
 		}
 	}
 
-	c1 := convertToChunks(t, samplesToInterface(s1))
-	c2 := convertToChunks(t, samplesToInterface(s2))
+	c1 := convertToChunks(t, samplesToInterface(s1), false)
+	c2 := convertToChunks(t, samplesToInterface(s2), false)
 	chunks12 := []client.Chunk{}
 	chunks12 = append(chunks12, c1...)
 	chunks12 = append(chunks12, c2...)
@@ -389,7 +404,7 @@ func TestBatchMergeChunks(t *testing.T) {
 		nil)
 
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:     logger,
+		Logger:     util_log.SlogFromGoKit(logger),
 		MaxSamples: 1e6,
 		Timeout:    1 * time.Minute,
 	})
@@ -461,7 +476,7 @@ func BenchmarkQueryExecute(b *testing.B) {
 				nil)
 
 			engine := promql.NewEngine(promql.EngineOpts{
-				Logger:     logger,
+				Logger:     util_log.SlogFromGoKit(logger),
 				MaxSamples: 1e6,
 				Timeout:    1 * time.Minute,
 			})
@@ -605,10 +620,10 @@ func TestQuerier_QueryIngestersWithinConfig(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
+	queryTracker := promql.NewActiveQueryTracker(dir, 10, promslog.NewNopLogger())
 
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:             log.NewNopLogger(),
+		Logger:             promslog.NewNopLogger(),
 		ActiveQueryTracker: queryTracker,
 		MaxSamples:         1e6,
 		Timeout:            1 * time.Minute,
@@ -677,7 +692,7 @@ func TestQuerier_ValidateQueryTimeRange(t *testing.T) {
 	}
 
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:        log.NewNopLogger(),
+		Logger:        promslog.NewNopLogger(),
 		MaxSamples:    1e6,
 		Timeout:       1 * time.Minute,
 		LookbackDelta: engineLookbackDelta,
@@ -743,13 +758,13 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLength(t *testing.T) {
 			query:          "rate(foo[31d])",
 			queryStartTime: time.Now().Add(-time.Hour),
 			queryEndTime:   time.Now(),
-			expected:       errors.Errorf("expanding series: %s", NewMaxQueryLengthError(745*time.Hour, 720*time.Hour)),
+			expected:       errors.Errorf("expanding series: %s", NewMaxQueryLengthError(745*time.Hour-time.Millisecond, 720*time.Hour)),
 		},
 		"should forbid query on large time range over the limit and short rate time window": {
 			query:          "rate(foo[1m])",
 			queryStartTime: time.Now().Add(-maxQueryLength).Add(-time.Hour),
 			queryEndTime:   time.Now(),
-			expected:       errors.Errorf("expanding series: %s", NewMaxQueryLengthError((721*time.Hour)+time.Minute, 720*time.Hour)),
+			expected:       errors.Errorf("expanding series: %s", NewMaxQueryLengthError((721*time.Hour)+time.Minute-time.Millisecond, 720*time.Hour)),
 		},
 	}
 
@@ -770,7 +785,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLength(t *testing.T) {
 
 			// Create the PromQL engine to execute the query.
 			engine := promql.NewEngine(promql.EngineOpts{
-				Logger:             log.NewNopLogger(),
+				Logger:             promslog.NewNopLogger(),
 				ActiveQueryTracker: nil,
 				MaxSamples:         1e6,
 				Timeout:            1 * time.Minute,
@@ -863,7 +878,7 @@ func TestQuerier_ValidateQueryTimeRange_MaxQueryLookback(t *testing.T) {
 	logger := log.NewNopLogger()
 	// Create the PromQL engine to execute the queries.
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:             logger,
+		Logger:             util_log.SlogFromGoKit(logger),
 		ActiveQueryTracker: nil,
 		MaxSamples:         1e6,
 		LookbackDelta:      engineLookbackDelta,
@@ -1111,11 +1126,11 @@ func TestQuerier_ValidateQueryTimeRange_MaxLabelsQueryRange(t *testing.T) {
 
 func testRangeQuery(t testing.TB, queryable storage.Queryable, end model.Time, q query) *promql.Result {
 	dir := t.TempDir()
-	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
+	queryTracker := promql.NewActiveQueryTracker(dir, 10, promslog.NewNopLogger())
 
 	from, through, step := time.Unix(0, 0), end.Time(), q.step
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:             log.NewNopLogger(),
+		Logger:             promslog.NewNopLogger(),
 		ActiveQueryTracker: queryTracker,
 		MaxSamples:         1e6,
 		Timeout:            1 * time.Minute,
@@ -1265,10 +1280,10 @@ func TestQuerier_QueryStoreAfterConfig(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	queryTracker := promql.NewActiveQueryTracker(dir, 10, log.NewNopLogger())
+	queryTracker := promql.NewActiveQueryTracker(dir, 10, promslog.NewNopLogger())
 
 	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:             log.NewNopLogger(),
+		Logger:             promslog.NewNopLogger(),
 		ActiveQueryTracker: queryTracker,
 		MaxSamples:         1e6,
 		Timeout:            1 * time.Minute,

@@ -1183,7 +1183,7 @@ func TestOTLPPushHandlerErrorsAreReportedCorrectlyViaHttpgrpc(t *testing.T) {
 
 		return nil
 	}
-	h := OTLPHandler(200, util.NewBufferPool(0), nil, otlpLimitsMock{}, RetryConfig{}, push, newPushMetrics(reg), reg, log.NewNopLogger())
+	h := OTLPHandler(200, util.NewBufferPool(0), nil, otlpLimitsMock{}, nil, RetryConfig{}, push, newPushMetrics(reg), reg, log.NewNopLogger())
 	srv.HTTP.Handle("/otlp", h)
 
 	// start the server
@@ -1242,6 +1242,26 @@ func TestOTLPPushHandlerErrorsAreReportedCorrectlyViaHttpgrpc(t *testing.T) {
 				Body: mustMarshalStatus(t, 400, "ReadObjectCB: expect { or n, but found i, error found in #1 byte of ...|invalid|..., bigger context ...|invalid|..."),
 			},
 			expectedGrpcErrorMessage: "rpc error: code = Code(400) desc = ReadObjectCB: expect { or n, but found i, error found in #1 byte of ...|invalid|..., bigger context ...|invalid|...",
+		},
+
+		"invalid JSON with non-utf8 characters request returns 400": {
+			request: &httpgrpc.HTTPRequest{
+				Method: "POST",
+				Headers: []*httpgrpc.Header{
+					{Key: "Content-Type", Values: []string{"application/json"}},
+				},
+				Url: "/otlp",
+				// \xf6 and \xd3 are not valid UTF8 characters, and they should be replaced with \UFFFD in the output.
+				Body: []byte("\n\xf6\x16\n\xd3\x02\n\x1d\n\x11container.runtime\x12\x08\n\x06docker\n'\n\x12container.h"),
+			},
+			expectedResponse: &httpgrpc.HTTPResponse{Code: 400,
+				Headers: []*httpgrpc.Header{
+					{Key: "Content-Type", Values: []string{"application/octet-stream"}},
+					{Key: "X-Content-Type-Options", Values: []string{"nosniff"}},
+				},
+				Body: mustMarshalStatus(t, 400, "ReadObjectCB: expect { or n, but found \ufffd, error found in #2 byte of ...|\n\ufffd\u0016\n\ufffd\u0002\n\u001d\n\u0011co|..., bigger context ...|\n\ufffd\u0016\n\ufffd\u0002\n\u001d\n\u0011container.runtime\u0012\u0008\n\u0006docker\n'\n\u0012container.h|..."),
+			},
+			expectedGrpcErrorMessage: "rpc error: code = Code(400) desc = ReadObjectCB: expect { or n, but found \ufffd, error found in #2 byte of ...|\n\ufffd\u0016\n\ufffd\u0002\n\u001d\n\u0011co|..., bigger context ...|\n\ufffd\u0016\n\ufffd\u0002\n\u001d\n\u0011container.runtime\u0012\u0008\n\u0006docker\n'\n\u0012container.h|...",
 		},
 
 		"empty JSON is good request, with 200 status code": {
@@ -1347,11 +1367,19 @@ func mustMarshalStatus(t *testing.T, code codes.Code, msg string) []byte {
 
 type otlpLimitsMock struct{}
 
-func (o otlpLimitsMock) OTelMetricSuffixesEnabled(_ string) bool {
+func (o otlpLimitsMock) OTelMetricSuffixesEnabled(string) bool {
 	return false
 }
 
-func (o otlpLimitsMock) OTelCreatedTimestampZeroIngestionEnabled(_ string) bool {
+func (o otlpLimitsMock) OTelCreatedTimestampZeroIngestionEnabled(string) bool {
+	return false
+}
+
+func (o otlpLimitsMock) PromoteOTelResourceAttributes(string) []string {
+	return nil
+}
+
+func (o otlpLimitsMock) OTelKeepIdentifyingResourceAttributes(string) bool {
 	return false
 }
 

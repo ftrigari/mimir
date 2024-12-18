@@ -84,31 +84,22 @@ func (i *InstantVectorSeriesDataIterator) Next() (t int64, f float64, h *histogr
 //   - RangeStart is 1712015700000 (2024-04-01T23:55:00Z)
 //   - RangeEnd is 1712016000000 (2024-04-02T00:00:00Z)
 type RangeVectorStepData struct {
-	// Floats contains the float samples for this time step, and possibly points beyond the end of the
-	// selected range. Callers should compare points' timestamps to RangeEnd.
-	//
-	// The ring buffer must not be modified, including closing it, as RangeVectorOperator implementations
-	// may return the same ring buffer for subsequent steps and reuse the same points, if the ranges for
-	// both steps overlap.
-	Floats *FPointRingBuffer
+	// Floats contains the float samples for this time step.
+	Floats *FPointRingBufferView
 
-	// Histograms contains the histogram samples for this time step, and possibly points beyond the end of the
-	// selected range. Callers should compare points' timestamps to RangeEnd.
-	//
-	// The ring buffer must not be modified, including closing it, as RangeVectorOperator implementations
-	// may return the same ring buffer for subsequent steps and reuse the same points, if the ranges for
-	// both steps overlap.
+	// Histograms contains the histogram samples for this time step.
 	//
 	// FloatHistogram instances in the buffer must not be modified as they may be returned for subsequent steps.
 	// FloatHistogram instances that are retained after the next call to NextStepSamples must be copied, as they
 	// may be modified on subsequent calls to NextStepSamples.
-	Histograms *HPointRingBuffer
+	Histograms *HPointRingBufferView
 
 	// StepT is the timestamp of this time step.
 	StepT int64
 
 	// RangeStart is the beginning of the time range selected by this time step.
-	// RangeStart is inclusive (ie. points with timestamp >= RangeStart are included in the range).
+	// RangeStart is exclusive (ie. points with timestamp > RangeStart are included in the range,
+	// and the point with timestamp == RangeStart is excluded).
 	RangeStart int64
 
 	// RangeEnd is the end of the time range selected by this time step.
@@ -195,4 +186,10 @@ func NewRangeQueryTimeRange(start time.Time, end time.Time, interval time.Durati
 // t must be in line with IntervalMs (ie the step).
 func (q *QueryTimeRange) PointIndex(t int64) int64 {
 	return (t - q.StartT) / q.IntervalMilliseconds
+}
+
+// IndexTime returns the timestamp that the point index, p, falls on.
+// p must be less than StepCount
+func (q *QueryTimeRange) IndexTime(p int64) int64 {
+	return q.StartT + p*q.IntervalMilliseconds
 }
