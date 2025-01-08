@@ -1238,10 +1238,6 @@ instance_limits:
 # CLI flag: -ingester.read-path-memory-utilization-limit
 [read_path_memory_utilization_limit: <int> | default = 0]
 
-# (experimental) Enable logging of utilization based limiter CPU samples.
-# CLI flag: -ingester.log-utilization-based-limiter-cpu-samples
-[log_utilization_based_limiter_cpu_samples: <boolean> | default = false]
-
 # (advanced) Each error will be logged once in this many times. Use 0 to log all
 # of them.
 # CLI flag: -ingester.error-sample-rate
@@ -1535,6 +1531,12 @@ mimir_query_engine:
   # Mimir query engine. Only applies if the MQE is in use.
   # CLI flag: -querier.mimir-query-engine.enable-histogram-quantile-function
   [enable_histogram_quantile_function: <boolean> | default = true]
+
+  # (experimental) Enable support for one-to-many and many-to-one binary
+  # operations (group_left/group_right) in the Mimir query engine. Only applies
+  # if the MQE is in use.
+  # CLI flag: -querier.mimir-query-engine.enable-one-to-many-and-many-to-one-binary-operations
+  [enable_one_to_many_and_many_to_one_binary_operations: <boolean> | default = true]
 ```
 
 ### frontend

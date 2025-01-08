@@ -29,6 +29,12 @@ Entries should include a reference to the Pull Request that introduced the chang
 
 ## main / unreleased
 
+* [CHANGE] Memcached: Update to Memcached 1.6.34. #10318
+* [ENHANCEMENT] Minio: update subchart to v5.4.0. #10346
+* [BUGFIX] Fix calculation of `mimir.siToBytes` and use floating point arithmetics. #10044
+
+## 5.6.0-rc.0
+
 * [CHANGE] Update rollout-operator version to 0.20.0. #9995
 * [CHANGE] Remove the `track_sizes` feature for Memcached pods since it is unused. #10032
 * [FEATURE] Add support for GEM's federation-frontend. See the `federation_frontend` section in the values file. #9673
